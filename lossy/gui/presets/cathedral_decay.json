@@ -1,0 +1,14 @@
+{
+  "mode": 0,
+  "loss": 0.3,
+  "speed": 0.05,
+  "verb": 0.85,
+  "decay": 0.95,
+  "verb_position": 0,
+  "gate": 0.05,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Textural",
+    "description": "Long reverb decay fed into mild spectral loss"
+  }
+}

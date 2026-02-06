@@ -1,15 +1,60 @@
 {
-  "delay_times": [1058, 1323, 1472, 1707, 1892, 2112, 2413, 2605],
-  "damping_coeffs": [0.30, 0.35, 0.30, 0.38, 0.30, 0.35, 0.38, 0.30],
+  "delay_times": [
+    1058,
+    1323,
+    1472,
+    1707,
+    1892,
+    2112,
+    2413,
+    2605
+  ],
+  "damping_coeffs": [
+    0.3,
+    0.35,
+    0.3,
+    0.38,
+    0.3,
+    0.35,
+    0.38,
+    0.3
+  ],
   "feedback_gain": 0.75,
-  "input_gains": [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125],
-  "output_gains": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+  "input_gains": [
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125
+  ],
+  "output_gains": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
   "pre_delay": 1323,
   "diffusion": 0.55,
   "diffusion_stages": 4,
-  "diffusion_delays": [88, 132, 195, 269],
+  "diffusion_delays": [
+    88,
+    132,
+    195,
+    269
+  ],
   "wet_dry": 0.3,
-  "saturation": 0.20,
+  "saturation": 0.2,
   "matrix_type": "circulant",
-  "matrix_seed": 42
+  "matrix_seed": 42,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Fender spring reverb \u2014 boingy, dripping character"
+  }
 }

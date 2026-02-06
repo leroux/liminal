@@ -1,0 +1,17 @@
+{
+  "mode": 0,
+  "loss": 0.35,
+  "speed": 0.3,
+  "filter_type": 1,
+  "filter_freq": 3000.0,
+  "filter_width": 0.4,
+  "filter_slope": 1,
+  "bounce": 1,
+  "bounce_target": 5,
+  "bounce_rate": 0.4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Modulated",
+    "description": "LFO on filter frequency \u2014 auto-wah through bandpass"
+  }
+}

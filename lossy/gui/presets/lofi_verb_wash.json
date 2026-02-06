@@ -1,0 +1,24 @@
+{
+  "mode": 0,
+  "loss": 0.5,
+  "speed": 0.15,
+  "global_amount": 1.0,
+  "packets": 0,
+  "packet_rate": 0.0,
+  "packet_size": 30.0,
+  "filter_type": 0,
+  "filter_freq": 1000.0,
+  "filter_width": 0.5,
+  "filter_slope": 1,
+  "verb": 0.75,
+  "decay": 0.85,
+  "verb_position": 0,
+  "freeze": 0,
+  "freeze_mode": 0,
+  "gate": 0.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Textural",
+    "description": "Washed-out reverb through spectral loss \u2014 hazy atmosphere"
+  }
+}

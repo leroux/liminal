@@ -41,6 +41,11 @@ class ReverbGUI:
 
         self._scroll_widgets = {}  # widget path -> (var, from_, to_)
         self._diagram_redraw_id = None  # for debounced diagram refresh
+        self._autoplay_id = None
+        self.locks = {}            # param key -> BooleanVar (per-param lock)
+        self.section_locks = {}    # section title -> BooleanVar
+        self._param_section = {}   # param key -> section title
+        self._current_section = None
 
         default_source = os.path.join(TEST_SIGNALS_DIR, "dry_chords.wav")
         if os.path.exists(default_source):
@@ -108,10 +113,38 @@ class ReverbGUI:
             pass
 
     def _build_params_page(self, parent):
+        # Scrollable wrapper for the entire params page
+        scroll_canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=scroll_canvas.yview)
+        scroll_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        inner = ttk.Frame(scroll_canvas)
+        scroll_canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_configure(event):
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+        inner.bind("<Configure>", _on_configure)
+
+        # Forward mousewheel to the scroll canvas when hovering over it
+        def _on_scroll_canvas_wheel(event):
+            raw = event.delta if event.delta else (-1 if event.num == 5 else 1)
+            y = raw & 0xFFFF
+            if y >= 0x8000:
+                y -= 0x10000
+            scroll_canvas.yview_scroll(-y, "units")
+        scroll_canvas.bind("<MouseWheel>", _on_scroll_canvas_wheel)
+        try:
+            scroll_canvas.bind("<TouchpadScroll>", _on_scroll_canvas_wheel)
+        except tk.TclError:
+            pass
+        self._params_scroll_canvas = scroll_canvas
+
         # Two-column layout: left = global/matrix/XY, right = per-node sliders
-        left = ttk.Frame(parent, padding=5)
+        left = ttk.Frame(inner, padding=5)
         left.pack(side="left", fill="both", expand=True, anchor="n")
-        right = ttk.Frame(parent, padding=5)
+        right = ttk.Frame(inner, padding=5)
         right.pack(side="left", fill="both", expand=True, anchor="n")
 
         # ============ LEFT COLUMN ============
@@ -198,14 +231,15 @@ class ReverbGUI:
         self._draw_heatmap()
 
         # --- XY Pad ---
-        row = self._section(f, row, "XY Pad")
+        row = self._section(f, row, "XY Pad", lockable=False)
         xy_controls = ttk.Frame(f)
         xy_controls.grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
 
         ttk.Label(xy_controls, text="X:").pack(side="left")
         self.xy_x_var = tk.StringVar(value="feedback_gain")
-        xy_params = ["feedback_gain", "wet_dry", "diffusion", "saturation", "pre_delay_ms", "stereo_width"]
+        xy_params = ["feedback_gain", "wet_dry", "diffusion", "saturation", "pre_delay_ms",
+                      "stereo_width", "mod_master_rate", "mod_depth_delay_global"]
         ttk.Combobox(xy_controls, textvariable=self.xy_x_var, values=xy_params,
                      state="readonly", width=15).pack(side="left", padx=(2, 10))
         ttk.Label(xy_controls, text="Y:").pack(side="left")
@@ -220,6 +254,33 @@ class ReverbGUI:
         self.xy_canvas.bind("<B1-Motion>", self._on_xy_drag)
         self.xy_canvas.bind("<Button-1>", self._on_xy_drag)
         self._xy_draw_crosshair(self.xy_size // 2, self.xy_size // 2)
+        row += 1
+
+        # --- Modulation ---
+        row = self._section(f, row, "Modulation")
+        row = self._add_slider(f, row, "mod_master_rate", "Master Rate (Hz)",
+                               0.0, 100.0, 0.0, length=220)
+        row = self._add_slider(f, row, "mod_depth_delay_global", "Delay Depth (smp)",
+                               0.0, 100.0, 0.0, length=220)
+        row = self._add_slider(f, row, "mod_depth_damping_global", "Damp Depth",
+                               0.0, 0.5, 0.0, length=220)
+        row = self._add_slider(f, row, "mod_depth_output_global", "Out Gain Depth",
+                               0.0, 1.0, 0.0, length=220)
+        row = self._add_slider(f, row, "mod_depth_matrix", "Matrix Depth",
+                               0.0, 1.0, 0.0, length=220)
+        row = self._add_slider(f, row, "mod_correlation", "Correlation",
+                               0.0, 1.0, 1.0, length=220)
+
+        ttk.Label(f, text="Mod Waveform:").grid(row=row, column=0, sticky="w", pady=2)
+        self.mod_waveform_var = tk.StringVar(value="sine")
+        wf_combo = ttk.Combobox(f, textvariable=self.mod_waveform_var,
+            values=["sine", "triangle", "sample_hold"], state="readonly", width=15)
+        wf_combo.grid(row=row, column=1, sticky="w", pady=2)
+        wf_lock = tk.BooleanVar(value=False)
+        self.locks["mod_waveform"] = wf_lock
+        self._param_section["mod_waveform"] = self._current_section
+        ttk.Checkbutton(f, variable=wf_lock).grid(row=row, column=3, pady=2)
+        row += 1
 
         f.columnconfigure(1, weight=1)
 
@@ -281,32 +342,54 @@ class ReverbGUI:
                                         default_pans[i],
                                         self.node_pan_sliders, fmt=".2f", length=slider_len)
 
+        # --- Per-node rate multipliers ---
+        row = self._section(f, row, "Mod Rate Multipliers")
+        self.mod_rate_mult_sliders = []
+        for i in range(8):
+            row = self._add_node_slider(f, row, f"mrm_{i}", f"Node {i}", 0.25, 4.0, 1.0,
+                                        self.mod_rate_mult_sliders, fmt=".2f", length=slider_len)
+
         # Schedule diagram redraw when per-node sliders change
         for var_list in (self.delay_sliders, self.damping_sliders,
                          self.input_gain_sliders, self.output_gain_sliders,
-                         self.node_pan_sliders):
+                         self.node_pan_sliders, self.mod_rate_mult_sliders):
             for var in var_list:
                 var.trace_add("write", self._schedule_diagram_redraw)
 
         f.columnconfigure(1, weight=1)
 
+        # Auto-play on discrete parameter change (comboboxes)
+        self.matrix_var.trace_add("write", lambda *_: self._schedule_autoplay())
+        self.mod_waveform_var.trace_add("write", lambda *_: self._schedule_autoplay())
+
     def _build_presets_page(self, parent):
-        ttk.Label(parent, text="Presets:").pack(anchor="w")
-        list_frame = ttk.Frame(parent)
-        list_frame.pack(fill="both", expand=True, pady=5)
+        # Treeview grouped by category
+        tree_frame = ttk.Frame(parent)
+        tree_frame.pack(fill="both", expand=True, pady=5)
 
-        self.preset_listbox = tk.Listbox(list_frame, height=15)
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.preset_listbox.yview)
-        self.preset_listbox.configure(yscrollcommand=scrollbar.set)
-        self.preset_listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self.preset_tree = ttk.Treeview(tree_frame, columns=("desc", "name"),
+                                         show="tree headings",
+                                         selectmode="browse", height=20)
+        self.preset_tree.heading("#0", text="Preset", anchor="w")
+        self.preset_tree.heading("desc", text="Description", anchor="w")
+        self.preset_tree.column("#0", width=220, minwidth=120)
+        self.preset_tree.column("desc", width=400, minwidth=200)
+        self.preset_tree.column("name", width=0, stretch=False)  # hidden data column
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical",
+                                     command=self.preset_tree.yview)
+        self.preset_tree.configure(yscrollcommand=tree_scroll.set)
+        self.preset_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
+        self.preset_tree.bind("<Double-1>", lambda e: self._on_load_preset(play=True))
 
+        self._preset_meta = {}  # name -> {category, description}
         self._refresh_preset_list()
 
         btn_frame = ttk.Frame(parent)
         btn_frame.pack(fill="x", pady=5)
         ttk.Button(btn_frame, text="Load", command=self._on_load_preset).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Save As...", command=self._on_save_preset).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Delete", command=self._on_delete_preset).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Refresh", command=self._refresh_preset_list).pack(side="left", padx=2)
 
     def _build_description_page(self, parent):
@@ -488,6 +571,70 @@ class ReverbGUI:
              "Click or drag on the pad to adjust both parameters simultaneously. "
              "The crosshair syncs with the sliders in both directions.")
 
+        # --- Modulation ---
+        h2("Modulation (Time-Varying FDN)")
+        body("Modulation adds life and movement to the reverb by continuously varying "
+             "delay times, damping, output gains, and the feedback matrix over time. "
+             "An internal LFO (low-frequency oscillator) drives these changes. The result "
+             "ranges from subtle chorus and spatial drift to alien FM-like textures.")
+
+        h3("Three Timescales")
+        body("Slow (0.01\u20130.5 Hz): The reverb character drifts over several seconds \u2014 "
+             "spatial size, brightness, and density evolve gradually. "
+             "Medium/LFO (0.5\u201320 Hz): Classic chorus and vibrato effects \u2014 "
+             "eliminates metallic ringing from static delay lines. "
+             "Fast/Audio-rate (20+ Hz): Creates FM-like inharmonic sidebands \u2014 "
+             "alien, bell-like, or granular textures.")
+
+        param("Master Rate", "0 \u2013 100 Hz",
+              "The fundamental modulation speed. All per-node LFOs derive their "
+              "rate from this value multiplied by their rate multiplier. "
+              "Set to 0 for static (classic FDN) behavior.")
+        tip("0 = off.  0.1 = slow evolve.  2 = chorus.  80+ = FM territory.")
+        text.insert("end", "\n", "body")
+
+        param("Delay Depth", "0 \u2013 100 samples",
+              "How far the delay times swing around their base values. "
+              "Small values (3\u20135 smp) create subtle chorus. "
+              "Large values (20+ smp) create audible pitch wobble.")
+        text.insert("end", "\n", "body")
+
+        param("Damp Depth", "0.0 \u2013 0.5",
+              "How much the damping coefficients swing. Creates "
+              "time-varying brightness \u2014 the reverb breathes between "
+              "bright and dark.")
+        text.insert("end", "\n", "body")
+
+        param("Out Gain Depth", "0.0 \u2013 1.0",
+              "Modulates output gains per node. Creates tremolo-like "
+              "amplitude variations in the reverb tail.")
+        text.insert("end", "\n", "body")
+
+        param("Matrix Depth", "0.0 \u2013 1.0",
+              "Blends between the primary feedback matrix and a secondary "
+              "matrix (random orthogonal). The energy routing between "
+              "nodes changes over time \u2014 the reverb's internal structure breathes.")
+        text.insert("end", "\n", "body")
+
+        param("Correlation", "0.0 \u2013 1.0",
+              "Controls phase relationships between the 8 per-node LFOs. "
+              "1.0 = all nodes modulate in sync (uniform). "
+              "0.0 = phases spread evenly (maximum decorrelation).")
+        tip("Low correlation creates wider stereo movement and more complex textures.")
+        text.insert("end", "\n", "body")
+
+        param("Mod Waveform", "sine / triangle / sample_hold",
+              "The LFO shape. Sine is smooth and natural. Triangle is "
+              "slightly brighter. Sample-and-hold creates stepped, "
+              "random-sounding modulation.")
+        text.insert("end", "\n", "body")
+
+        param("Rate Multipliers", "0.25 \u2013 4.0 per node",
+              "Each node's LFO rate = master rate \u00d7 its multiplier. "
+              "Use integer ratios (1, 2, 3) for rhythmic relationships "
+              "or non-integer values for more chaotic modulation.")
+        text.insert("end", "\n", "body")
+
         # --- Per-Node ---
         h2("Per-Node Parameters (8 nodes)")
         body("Each of the 8 delay lines in the FDN has its own settings. Using "
@@ -588,114 +735,125 @@ class ReverbGUI:
         if plot_w < 50 or plot_h < 30:
             return
 
-        audio = self.rendered_audio
-        if audio is None:
+        raw_audio = self.rendered_audio
+        if raw_audio is None:
             c.create_text(W // 2, H // 2, text="No rendered audio yet — press Play first",
                           fill=LABEL_COL, font=F_TITLE)
             return
 
-        # Sum stereo to mono for waveform display
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)
-
-        n_samples = len(audio)
+        stereo = raw_audio.ndim == 2
+        n_samples = raw_audio.shape[0] if stereo else len(raw_audio)
         duration = n_samples / SR
 
-        c.create_text(W // 2, 16, text=f"Rendered Waveform — {duration:.1f}s — {n_samples} samples",
+        if stereo:
+            ch_list = [(raw_audio[:, 0], WAVE_COL, "#1a3550", "L"),
+                       (raw_audio[:, 1], "#cc6644", "#3a2218", "R")]
+        else:
+            ch_list = [(raw_audio, WAVE_COL, "#1a3550", None)]
+
+        n_channels = len(ch_list)
+        ch_label = "Stereo" if stereo else "Mono"
+        c.create_text(W // 2, 16,
+                      text=f"Rendered Waveform — {ch_label} — {duration:.1f}s — {n_samples} samples",
                       fill=TITLE_COL, font=F_TITLE)
 
-        # Plot area background
-        c.create_rectangle(pad_left, pad_top, pad_left + plot_w, pad_top + plot_h,
-                           fill="#0a0a14", outline="#333355")
+        # Each channel gets an equal vertical slice of the plot area
+        for ch_idx, (audio, wave_col, fill_col, label) in enumerate(ch_list):
+            ch_top = pad_top + ch_idx * (plot_h // n_channels)
+            ch_h = plot_h // n_channels
+            zero_y = ch_top + ch_h / 2
 
-        # Grid lines and labels (amplitude)
-        for amp in [-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75]:
-            y = pad_top + plot_h / 2 - amp * plot_h / 2
-            c.create_line(pad_left, y, pad_left + plot_w, y, fill=GRID_COL)
-            if amp in (-0.5, 0.0, 0.5):
-                c.create_text(pad_left - 5, y, text=f"{amp:.1f}",
-                              fill=LABEL_COL, font=F_LABEL, anchor="e")
+            # Plot area background
+            c.create_rectangle(pad_left, ch_top, pad_left + plot_w, ch_top + ch_h,
+                               fill="#0a0a14", outline="#333355")
 
-        # Zero line
-        zero_y = pad_top + plot_h / 2
-        c.create_line(pad_left, zero_y, pad_left + plot_w, zero_y, fill="#333355", width=1)
+            # Grid lines and labels (amplitude)
+            for amp in [-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75]:
+                y = zero_y - amp * ch_h / 2
+                c.create_line(pad_left, y, pad_left + plot_w, y, fill=GRID_COL)
+                if amp in (-0.5, 0.0, 0.5) and ch_idx == 0:
+                    c.create_text(pad_left - 5, y, text=f"{amp:.1f}",
+                                  fill=LABEL_COL, font=F_LABEL, anchor="e")
 
-        # Time grid lines
-        time_step = max(0.5, round(duration / 8, 1))
-        t = 0.0
-        while t <= duration:
-            x = pad_left + (t / duration) * plot_w
-            c.create_line(x, pad_top, x, pad_top + plot_h, fill=GRID_COL)
-            c.create_text(x, pad_top + plot_h + 12, text=f"{t:.1f}s",
-                          fill=LABEL_COL, font=F_LABEL)
-            t += time_step
+            # Zero line
+            c.create_line(pad_left, zero_y, pad_left + plot_w, zero_y, fill="#333355", width=1)
 
-        # Downsample for display: compute min/max per pixel column
-        samples_per_pixel = max(1, n_samples // plot_w)
-        n_cols = min(plot_w, n_samples)
+            # Channel label
+            if label:
+                c.create_text(pad_left + 6, ch_top + 4, text=label,
+                              fill=wave_col, font=F_LABEL, anchor="nw")
 
-        # Build min/max envelope
-        wave_points_top = []
-        wave_points_bot = []
-        for col in range(n_cols):
-            start = int(col * n_samples / n_cols)
-            end = min(int((col + 1) * n_samples / n_cols), n_samples)
-            if start >= end:
-                continue
-            chunk = audio[start:end]
-            mn = float(np.min(chunk))
-            mx = float(np.max(chunk))
-            x = pad_left + col
-            y_top = zero_y - mx * (plot_h / 2)
-            y_bot = zero_y - mn * (plot_h / 2)
-            # Clamp to plot area
-            y_top = max(pad_top, min(pad_top + plot_h, y_top))
-            y_bot = max(pad_top, min(pad_top + plot_h, y_bot))
-            wave_points_top.append((x, y_top))
-            wave_points_bot.append((x, y_bot))
+            # Time grid lines (only on first channel to avoid overlap)
+            if ch_idx == 0:
+                time_step = max(0.5, round(duration / 8, 1))
+                t = 0.0
+                while t <= duration:
+                    x = pad_left + (t / duration) * plot_w
+                    c.create_line(x, pad_top, x, pad_top + plot_h, fill=GRID_COL)
+                    c.create_text(x, pad_top + plot_h + 12, text=f"{t:.1f}s",
+                                  fill=LABEL_COL, font=F_LABEL)
+                    t += time_step
 
-        # Draw filled waveform envelope
-        if wave_points_top and wave_points_bot:
-            # Build polygon: top left-to-right, then bottom right-to-left
-            poly = []
-            for x, y in wave_points_top:
-                poly.extend([x, y])
-            for x, y in reversed(wave_points_bot):
-                poly.extend([x, y])
-            if len(poly) >= 6:
-                c.create_polygon(poly, fill="#1a3550", outline="")
-            # Draw top and bottom edges
-            if len(wave_points_top) >= 2:
-                top_flat = []
+            # Downsample for display: compute min/max per pixel column
+            n_cols = min(plot_w, n_samples)
+            wave_points_top = []
+            wave_points_bot = []
+            for col in range(n_cols):
+                start = int(col * n_samples / n_cols)
+                end = min(int((col + 1) * n_samples / n_cols), n_samples)
+                if start >= end:
+                    continue
+                chunk = audio[start:end]
+                mn = float(np.min(chunk))
+                mx = float(np.max(chunk))
+                x = pad_left + col
+                y_top = zero_y - mx * (ch_h / 2)
+                y_bot = zero_y - mn * (ch_h / 2)
+                y_top = max(ch_top, min(ch_top + ch_h, y_top))
+                y_bot = max(ch_top, min(ch_top + ch_h, y_bot))
+                wave_points_top.append((x, y_top))
+                wave_points_bot.append((x, y_bot))
+
+            # Draw filled waveform envelope
+            if wave_points_top and wave_points_bot:
+                poly = []
                 for x, y in wave_points_top:
-                    top_flat.extend([x, y])
-                c.create_line(*top_flat, fill=WAVE_COL, width=1)
-            if len(wave_points_bot) >= 2:
-                bot_flat = []
-                for x, y in wave_points_bot:
-                    bot_flat.extend([x, y])
-                c.create_line(*bot_flat, fill=WAVE_COL, width=1)
+                    poly.extend([x, y])
+                for x, y in reversed(wave_points_bot):
+                    poly.extend([x, y])
+                if len(poly) >= 6:
+                    c.create_polygon(poly, fill=fill_col, outline="")
+                if len(wave_points_top) >= 2:
+                    top_flat = []
+                    for x, y in wave_points_top:
+                        top_flat.extend([x, y])
+                    c.create_line(*top_flat, fill=wave_col, width=1)
+                if len(wave_points_bot) >= 2:
+                    bot_flat = []
+                    for x, y in wave_points_bot:
+                        bot_flat.extend([x, y])
+                    c.create_line(*bot_flat, fill=wave_col, width=1)
 
-        # RMS envelope (windowed)
-        rms_window = max(1, n_samples // 200)
-        rms_points = []
-        for col in range(min(200, n_cols)):
-            start = int(col * n_samples / 200)
-            end = min(start + rms_window * 2, n_samples)
-            if start >= end:
-                continue
-            chunk = audio[start:end]
-            rms = float(np.sqrt(np.mean(chunk ** 2)))
-            x = pad_left + (col / 200) * plot_w
-            y = zero_y - rms * (plot_h / 2)
-            y = max(pad_top, min(pad_top + plot_h, y))
-            rms_points.extend([x, y])
-        if len(rms_points) >= 4:
-            c.create_line(*rms_points, fill=RMS_COL, width=1.5, smooth=True)
+            # RMS envelope (windowed)
+            rms_window = max(1, n_samples // 200)
+            rms_points = []
+            for col in range(min(200, n_cols)):
+                start = int(col * n_samples / 200)
+                end = min(start + rms_window * 2, n_samples)
+                if start >= end:
+                    continue
+                chunk = audio[start:end]
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
+                x = pad_left + (col / 200) * plot_w
+                y = zero_y - rms * (ch_h / 2)
+                y = max(ch_top, min(ch_top + ch_h, y))
+                rms_points.extend([x, y])
+            if len(rms_points) >= 4:
+                c.create_line(*rms_points, fill=RMS_COL, width=1.5, smooth=True)
 
-        # Stats
-        peak = float(np.max(np.abs(audio)))
-        rms_total = float(np.sqrt(np.mean(audio ** 2)))
+        # Stats (from full audio)
+        peak = float(np.max(np.abs(raw_audio)))
+        rms_total = float(np.sqrt(np.mean(raw_audio ** 2)))
         stats_y = pad_top + plot_h + 28
         c.create_text(pad_left, stats_y, text=f"Peak: {peak:.3f}",
                       fill=WAVE_COL, font=F_LABEL, anchor="w")
@@ -711,6 +869,18 @@ class ReverbGUI:
             self._draw_diagram()
         elif idx == 3:  # Waveform tab
             self._draw_waveform()
+
+    def _schedule_autoplay(self):
+        if self._autoplay_id is not None:
+            self.root.after_cancel(self._autoplay_id)
+        self._autoplay_id = self.root.after(400, self._on_play)
+
+    def _check_autoplay(self):
+        """Re-render if params changed during a render."""
+        params = self._read_params_from_ui()
+        snap = self._params_snapshot(params)
+        if self.rendered_params != snap:
+            self._on_play()
 
     def _schedule_diagram_redraw(self, *args):
         """Debounced diagram refresh — redraws 200ms after the last param change."""
@@ -990,11 +1160,18 @@ class ReverbGUI:
     # Slider helpers
     # ------------------------------------------------------------------
 
-    def _section(self, parent, row, title):
+    def _section(self, parent, row, title, lockable=True):
         sep = ttk.Separator(parent, orient="horizontal")
-        sep.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 2))
-        ttk.Label(parent, text=title, font=("TkDefaultFont", 0, "bold")).grid(
-            row=row+1, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        sep.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 2))
+        header = ttk.Frame(parent)
+        header.grid(row=row+1, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        ttk.Label(header, text=title, font=("TkDefaultFont", 0, "bold")).pack(side="left")
+        if lockable:
+            lock_var = tk.BooleanVar(value=False)
+            self.section_locks[title] = lock_var
+            ttk.Checkbutton(header, text="\U0001F512", variable=lock_var).pack(
+                side="left", padx=(6, 0))
+        self._current_section = title
         return row + 2
 
     def _on_global_scroll(self, event):
@@ -1013,6 +1190,7 @@ class ReverbGUI:
             y -= 0x10000
         step = (to_ - from_) * 0.002
         var.set(max(from_, min(to_, var.get() + y * step)))
+        self._schedule_autoplay()
 
     def _bind_scroll(self, widget, var, from_, to_):
         self._scroll_widgets[str(widget)] = (var, from_, to_)
@@ -1028,6 +1206,11 @@ class ReverbGUI:
         val_label.grid(row=row, column=2, sticky="w", pady=1)
         var.trace_add("write", lambda *a, v=var, l=val_label: l.config(text=f"{v.get():.2f}"))
         self.sliders[key] = var
+        lock_var = tk.BooleanVar(value=False)
+        self.locks[key] = lock_var
+        self._param_section[key] = self._current_section
+        ttk.Checkbutton(parent, variable=lock_var).grid(row=row, column=3, pady=1)
+        scale.bind("<ButtonRelease-1>", lambda e: self._schedule_autoplay())
         return row + 1
 
     def _add_node_slider(self, parent, row, key, label, from_, to_, value, var_list, fmt=".2f", length=350):
@@ -1041,6 +1224,11 @@ class ReverbGUI:
         val_label.grid(row=row, column=2, sticky="w", pady=0)
         var.trace_add("write", lambda *a, v=var, l=val_label, f=fmt: l.config(text=f"{v.get():{f}}"))
         var_list.append(var)
+        lock_var = tk.BooleanVar(value=False)
+        self.locks[key] = lock_var
+        self._param_section[key] = self._current_section
+        ttk.Checkbutton(parent, variable=lock_var).grid(row=row, column=3, pady=0)
+        scale.bind("<ButtonRelease-1>", lambda e: self._schedule_autoplay())
         return row + 1
 
     # ------------------------------------------------------------------
@@ -1061,6 +1249,16 @@ class ReverbGUI:
         p["output_gains"] = [s.get() for s in self.output_gain_sliders]
         p["stereo_width"] = self.sliders["stereo_width"].get()
         p["node_pans"] = [s.get() for s in self.node_pan_sliders]
+        # Modulation
+        wf_map = {"sine": 0, "triangle": 1, "sample_hold": 2}
+        p["mod_master_rate"] = self.sliders["mod_master_rate"].get()
+        p["mod_waveform"] = wf_map.get(self.mod_waveform_var.get(), 0)
+        p["mod_correlation"] = self.sliders["mod_correlation"].get()
+        p["mod_depth_delay"] = [self.sliders["mod_depth_delay_global"].get()] * 8
+        p["mod_depth_damping"] = [self.sliders["mod_depth_damping_global"].get()] * 8
+        p["mod_depth_output"] = [self.sliders["mod_depth_output_global"].get()] * 8
+        p["mod_depth_matrix"] = self.sliders["mod_depth_matrix"].get()
+        p["mod_node_rate_mult"] = [s.get() for s in self.mod_rate_mult_sliders]
         if p["matrix_type"] == "custom" and self.custom_matrix is not None:
             p["matrix_custom"] = self.custom_matrix.tolist()
         return p
@@ -1082,6 +1280,21 @@ class ReverbGUI:
             self.input_gain_sliders[i].set(p["input_gains"][i])
             self.output_gain_sliders[i].set(p["output_gains"][i])
             self.node_pan_sliders[i].set(node_pans[i])
+        # Modulation
+        self.sliders["mod_master_rate"].set(p.get("mod_master_rate", 0.0))
+        dd = p.get("mod_depth_delay", [0.0] * 8)
+        self.sliders["mod_depth_delay_global"].set(dd[0] if isinstance(dd, list) else dd)
+        ddamp = p.get("mod_depth_damping", [0.0] * 8)
+        self.sliders["mod_depth_damping_global"].set(ddamp[0] if isinstance(ddamp, list) else ddamp)
+        dout = p.get("mod_depth_output", [0.0] * 8)
+        self.sliders["mod_depth_output_global"].set(dout[0] if isinstance(dout, list) else dout)
+        self.sliders["mod_depth_matrix"].set(p.get("mod_depth_matrix", 0.0))
+        self.sliders["mod_correlation"].set(p.get("mod_correlation", 1.0))
+        wf_rmap = {0: "sine", 1: "triangle", 2: "sample_hold"}
+        self.mod_waveform_var.set(wf_rmap.get(p.get("mod_waveform", 0), "sine"))
+        mrm = p.get("mod_node_rate_mult", [1.0] * 8)
+        for i in range(8):
+            self.mod_rate_mult_sliders[i].set(mrm[i])
         # Update heatmap
         if "matrix_custom" in p and p.get("matrix_type") == "custom":
             self.custom_matrix = np.array(p["matrix_custom"])
@@ -1255,28 +1468,61 @@ class ReverbGUI:
         self.matrix_var.set("custom")
         self.status_var.set("Using custom matrix — edit the heatmap, then Play")
 
+    def _is_locked(self, key):
+        """Check if a param is locked (individually or via its section lock)."""
+        if key in self.locks and self.locks[key].get():
+            return True
+        section = self._param_section.get(key)
+        if section and section in self.section_locks and self.section_locks[section].get():
+            return True
+        return False
+
     def _on_randomize_knobs(self):
-        """Randomize all parameters across the full range, including extreme values."""
+        """Randomize all parameters across the full range, including extreme values.
+        Respects per-param and section-level locks."""
         rng = np.random.default_rng()
-        self.sliders["feedback_gain"].set(rng.uniform(0.0, 2.0))
-        self.sliders["wet_dry"].set(rng.uniform(0.0, 1.0))
-        self.sliders["diffusion"].set(rng.uniform(0.0, 0.7))
-        self.sliders["saturation"].set(rng.uniform(0.0, 1.0))
-        self.sliders["pre_delay_ms"].set(rng.uniform(0.0, 250.0))
-        self.sliders["stereo_width"].set(rng.uniform(0.0, 1.0))
+        # Global sliders
+        for key, lo, hi in [("feedback_gain", 0.0, 2.0), ("wet_dry", 0.0, 1.0),
+                             ("diffusion", 0.0, 0.7), ("saturation", 0.0, 1.0),
+                             ("pre_delay_ms", 0.0, 250.0), ("stereo_width", 0.0, 1.0)]:
+            if not self._is_locked(key):
+                self.sliders[key].set(rng.uniform(lo, hi))
+        # Per-node sliders
+        node_groups = [
+            (self.delay_sliders, "delay", 0.5, 300.0),
+            (self.damping_sliders, "damp", 0.0, 0.99),
+            (self.input_gain_sliders, "ig", 0.0, 0.5),
+            (self.output_gain_sliders, "og", 0.0, 2.0),
+            (self.node_pan_sliders, "pan", -1.0, 1.0),
+        ]
+        for var_list, prefix, lo, hi in node_groups:
+            for i in range(8):
+                if not self._is_locked(f"{prefix}_{i}"):
+                    var_list[i].set(rng.uniform(lo, hi))
+        # Modulation sliders
+        for key, lo, hi in [("mod_master_rate", 0.0, 20.0),
+                             ("mod_depth_delay_global", 0.0, 30.0),
+                             ("mod_depth_damping_global", 0.0, 0.3),
+                             ("mod_depth_output_global", 0.0, 0.5),
+                             ("mod_depth_matrix", 0.0, 0.5),
+                             ("mod_correlation", 0.0, 1.0)]:
+            if not self._is_locked(key):
+                self.sliders[key].set(rng.uniform(lo, hi))
+        if not self._is_locked("mod_waveform"):
+            self.mod_waveform_var.set(rng.choice(["sine", "triangle", "sample_hold"]))
         for i in range(8):
-            self.delay_sliders[i].set(rng.uniform(0.5, 300.0))
-            self.damping_sliders[i].set(rng.uniform(0.0, 0.99))
-            self.input_gain_sliders[i].set(rng.uniform(0.0, 0.5))
-            self.output_gain_sliders[i].set(rng.uniform(0.0, 2.0))
-            self.node_pan_sliders[i].set(rng.uniform(-1.0, 1.0))
-        # Also randomize the matrix (50/50 unitary vs non-unitary)
-        mat = rng.standard_normal((8, 8))
-        if rng.random() < 0.5:
-            mat = nearest_unitary(mat)
-        self.custom_matrix = mat
-        self.matrix_var.set("custom")
-        self._draw_heatmap()
+            if not self._is_locked(f"mrm_{i}"):
+                self.mod_rate_mult_sliders[i].set(rng.choice([0.5, 1.0, 1.0, 2.0, 3.0]))
+        # Matrix — respect Feedback Matrix section lock
+        matrix_locked = ("Feedback Matrix" in self.section_locks
+                         and self.section_locks["Feedback Matrix"].get())
+        if not matrix_locked:
+            mat = rng.standard_normal((8, 8))
+            if rng.random() < 0.5:
+                mat = nearest_unitary(mat)
+            self.custom_matrix = mat
+            self.matrix_var.set("custom")
+            self._draw_heatmap()
         self.status_var.set("Randomized all")
 
     def _on_randomize_and_play(self):
@@ -1286,6 +1532,10 @@ class ReverbGUI:
 
     def _on_randomize_matrix(self):
         """Generate a random 8x8 matrix, optionally projected to unitary."""
+        if ("Feedback Matrix" in self.section_locks
+                and self.section_locks["Feedback Matrix"].get()):
+            self.status_var.set("Matrix is locked")
+            return
         rng = np.random.default_rng()
         mat = rng.standard_normal((8, 8))
         if self.random_unitary_var.get():
@@ -1302,7 +1552,9 @@ class ReverbGUI:
 
     _xy_ranges = {"feedback_gain": (0.0, 2.0), "wet_dry": (0.0, 1.0),
                    "diffusion": (0.0, 0.7), "pre_delay_ms": (0.0, 250.0),
-                   "saturation": (0.0, 1.0), "stereo_width": (0.0, 1.0)}
+                   "saturation": (0.0, 1.0), "stereo_width": (0.0, 1.0),
+                   "mod_master_rate": (0.0, 100.0),
+                   "mod_depth_delay_global": (0.0, 100.0)}
 
     def _xy_draw_crosshair(self, x, y):
         self.xy_canvas.delete("crosshair")
@@ -1350,8 +1602,7 @@ class ReverbGUI:
             audio = data.astype(np.float64) / 2147483648.0
         else:
             audio = data.astype(np.float64)
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)
+        # Keep stereo as (samples, 2) — don't downmix
         self.source_audio = audio
         self.source_path = path
         self.rendered_audio = None
@@ -1387,7 +1638,11 @@ class ReverbGUI:
         self.root.update()
 
         def do_render():
-            tail = np.zeros(int(self.sliders["tail_length"].get() * SR))
+            tail_len = int(self.sliders["tail_length"].get() * SR)
+            if self.source_audio.ndim == 2:
+                tail = np.zeros((tail_len, self.source_audio.shape[1]))
+            else:
+                tail = np.zeros(tail_len)
             audio_in = np.concatenate([self.source_audio, tail])
             output = render_fdn(audio_in, params)
 
@@ -1426,6 +1681,7 @@ class ReverbGUI:
             self.rendered_params = self._params_snapshot(params)
             self.rendering = False
             self.root.after(0, lambda: callback(output, loud_warning))
+            self.root.after(50, self._check_autoplay)
 
         threading.Thread(target=do_render, daemon=True).start()
 
@@ -1492,36 +1748,127 @@ class ReverbGUI:
     # ------------------------------------------------------------------
 
     def _refresh_preset_list(self):
-        self.preset_listbox.delete(0, tk.END)
-        if os.path.isdir(PRESET_DIR):
-            for f in sorted(os.listdir(PRESET_DIR)):
-                if f.endswith(".json"):
-                    self.preset_listbox.insert(tk.END, f[:-5])
+        self.preset_tree.delete(*self.preset_tree.get_children())
+        self._preset_meta.clear()
+        os.makedirs(PRESET_DIR, exist_ok=True)
 
-    def _on_load_preset(self):
-        sel = self.preset_listbox.curselection()
+        # Read all presets and group by category
+        categories = {}
+        for filename in sorted(os.listdir(PRESET_DIR)):
+            if not filename.endswith(".json"):
+                continue
+            name = filename[:-5]
+            path = os.path.join(PRESET_DIR, filename)
+            try:
+                with open(path) as fh:
+                    data = json.load(fh)
+            except (json.JSONDecodeError, OSError):
+                continue
+            meta = data.get("_meta", {})
+            cat = meta.get("category", "Uncategorized")
+            desc = meta.get("description", "")
+            self._preset_meta[name] = {"category": cat, "description": desc}
+            categories.setdefault(cat, []).append(name)
+
+        # Category display order
+        cat_order = ["Plate", "Room", "Hall", "Ambient", "Modulated",
+                     "Experimental", "Sound Design", "ML Generated",
+                     "Uncategorized"]
+        seen = set()
+        ordered_cats = []
+        for c in cat_order:
+            if c in categories:
+                ordered_cats.append(c)
+                seen.add(c)
+        for c in sorted(categories.keys()):
+            if c not in seen:
+                ordered_cats.append(c)
+
+        for cat in ordered_cats:
+            cat_id = self.preset_tree.insert("", "end", text=cat, open=True,
+                                              values=("", ""))
+            for name in categories[cat]:
+                desc = self._preset_meta[name].get("description", "")
+                self.preset_tree.insert(cat_id, "end", text=name,
+                                         values=(desc, name))
+
+    def _get_selected_preset_name(self):
+        sel = self.preset_tree.selection()
         if not sel:
+            return None
+        item = sel[0]
+        vals = self.preset_tree.item(item, "values")
+        name = vals[1] if vals and len(vals) > 1 else ""
+        if not name or name not in self._preset_meta:
+            return None
+        return name
+
+    def _on_load_preset(self, play=False):
+        name = self._get_selected_preset_name()
+        if not name:
             return
-        name = self.preset_listbox.get(sel[0])
         path = os.path.join(PRESET_DIR, name + ".json")
-        with open(path) as f:
-            p = json.load(f)
+        with open(path) as fh:
+            p = json.load(fh)
+        p.pop("_meta", None)
         full = default_params()
         full.update(p)
         self._write_params_to_ui(full)
         self.status_var.set(f"Loaded preset: {name}")
+        if play:
+            self._on_play()
 
     def _on_save_preset(self):
-        name = simpledialog.askstring("Save Preset", "Preset name:")
+        save_win = tk.Toplevel(self.root)
+        save_win.title("Save Preset")
+        save_win.geometry("360x200")
+        save_win.transient(self.root)
+        save_win.grab_set()
+
+        ttk.Label(save_win, text="Name:").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        name_var = tk.StringVar()
+        ttk.Entry(save_win, textvariable=name_var, width=30).grid(row=0, column=1, padx=8, pady=4)
+
+        ttk.Label(save_win, text="Category:").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        cat_var = tk.StringVar(value="Uncategorized")
+        cat_choices = ["Plate", "Room", "Hall", "Ambient", "Modulated",
+                       "Experimental", "Sound Design", "ML Generated"]
+        ttk.Combobox(save_win, textvariable=cat_var, values=cat_choices,
+                     width=28).grid(row=1, column=1, padx=8, pady=4)
+
+        ttk.Label(save_win, text="Description:").grid(row=2, column=0, sticky="nw", padx=8, pady=4)
+        desc_text = tk.Text(save_win, width=30, height=3, wrap="word")
+        desc_text.grid(row=2, column=1, padx=8, pady=4)
+
+        def do_save():
+            n = name_var.get().strip()
+            if not n:
+                return
+            params = self._read_params_from_ui()
+            params["_meta"] = {
+                "category": cat_var.get(),
+                "description": desc_text.get("1.0", "end").strip(),
+            }
+            os.makedirs(PRESET_DIR, exist_ok=True)
+            path = os.path.join(PRESET_DIR, n + ".json")
+            with open(path, "w") as fh:
+                json.dump(params, fh, indent=2)
+                fh.write("\n")
+            self._refresh_preset_list()
+            self.status_var.set(f"Saved preset: {n}")
+            save_win.destroy()
+
+        ttk.Button(save_win, text="Save", command=do_save).grid(
+            row=3, column=1, sticky="e", padx=8, pady=8)
+
+    def _on_delete_preset(self):
+        name = self._get_selected_preset_name()
         if not name:
             return
-        params = self._read_params_from_ui()
-        os.makedirs(PRESET_DIR, exist_ok=True)
         path = os.path.join(PRESET_DIR, name + ".json")
-        with open(path, "w") as f:
-            json.dump(params, f, indent=2)
+        if os.path.isfile(path):
+            os.remove(path)
         self._refresh_preset_list()
-        self.status_var.set(f"Saved preset: {name}")
 
 
 def main():

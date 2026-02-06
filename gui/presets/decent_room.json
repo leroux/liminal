@@ -52,5 +52,9 @@
   "wet_dry": 0.35,
   "saturation": 0.0,
   "matrix_type": "householder",
-  "matrix_seed": 42
+  "matrix_seed": 42,
+  "_meta": {
+    "category": "Room",
+    "description": "Natural medium room \u2014 balanced early reflections"
+  }
 }

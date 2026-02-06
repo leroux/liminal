@@ -1,0 +1,14 @@
+{
+  "mode": 0,
+  "loss": 0.6,
+  "speed": 0.1,
+  "verb": 0.7,
+  "decay": 0.8,
+  "verb_position": 0,
+  "weighting": 0.7,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Textural",
+    "description": "Pre-verb \u2014 reverb tail gets spectrally degraded"
+  }
+}

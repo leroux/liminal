@@ -1,0 +1,20 @@
+{
+  "mode": 0,
+  "loss": 0.65,
+  "speed": 0.5,
+  "phase_loss": 0.5,
+  "crush": 0.3,
+  "packets": 1,
+  "packet_rate": 0.25,
+  "packet_size": 40.0,
+  "bounce": 1,
+  "bounce_target": 0,
+  "bounce_rate": 0.35,
+  "auto_gain": 0.6,
+  "threshold": 0.25,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Phase + crush + packet dropout + bouncing loss — malfunctioning synthetic voice"
+  }
+}

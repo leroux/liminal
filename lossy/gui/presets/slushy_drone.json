@@ -1,0 +1,29 @@
+{
+  "mode": 0,
+  "loss": 0.5,
+  "speed": 0.05,
+  "global_amount": 1.0,
+  "phase_loss": 0.1,
+  "quantizer": 0,
+  "pre_echo": 0.0,
+  "noise_shape": 0.2,
+  "crush": 0.0,
+  "decimate": 0.0,
+  "packets": 0,
+  "packet_rate": 0.0,
+  "packet_size": 30.0,
+  "filter_type": 0,
+  "filter_freq": 1000.0,
+  "filter_width": 0.5,
+  "filter_slope": 1,
+  "verb": 0.45,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.5,
+  "gate": 0.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Textural",
+    "description": "Slowly updating freeze \u2014 melting spectral ice"
+  }
+}
