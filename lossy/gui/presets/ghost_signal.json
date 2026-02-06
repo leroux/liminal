@@ -1,0 +1,29 @@
+{
+  "mode": 1,
+  "loss": 0.6,
+  "speed": 0.1,
+  "global_amount": 1.0,
+  "phase_loss": 0.35,
+  "quantizer": 0,
+  "pre_echo": 0.0,
+  "noise_shape": 0.0,
+  "crush": 0.0,
+  "decimate": 0.0,
+  "packets": 0,
+  "packet_rate": 0.0,
+  "packet_size": 30.0,
+  "filter_type": 0,
+  "filter_freq": 1000.0,
+  "filter_width": 0.5,
+  "filter_slope": 1,
+  "verb": 0.4,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.65,
+  "gate": 0.15,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Ghost / Residue",
+    "description": "Faint spectral residue \u2014 barely-there harmonics"
+  }
+}

@@ -70,6 +70,39 @@ def default_params() -> dict:
 
         # Stereo width: 0=mono (all pans collapse to center), 1=full stereo
         "stereo_width": 1.0,
+
+        # --- Modulation (Phase 3) ---
+        # Global master rate in Hz (all modulators derive from this)
+        "mod_master_rate": 0.0,  # 0 = no modulation (backward compatible)
+
+        # Per-node rate multipliers (integer ratios for rhythmic relationships)
+        "mod_node_rate_mult": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+
+        # Correlation: 1.0 = all nodes in sync, 0.0 = evenly spread phases
+        "mod_correlation": 1.0,
+
+        # Waveform: 0=sine, 1=triangle, 2=sample-and-hold
+        "mod_waveform": 0,
+
+        # Per-target modulation depth (0 = off)
+        # Delay: depth in samples (+/- depth around base delay time)
+        "mod_depth_delay": [0.0] * 8,
+        # Damping: coefficient offset (+/- depth around base damping)
+        "mod_depth_damping": [0.0] * 8,
+        # Output gains: multiplier offset (+/- depth * base gain)
+        "mod_depth_output": [0.0] * 8,
+        # Matrix blend depth: 0-1 (how far to blend toward matrix2)
+        "mod_depth_matrix": 0.0,
+
+        # Per-target rate scale factors (multiplied with master_rate * node_mult)
+        "mod_rate_scale_delay": 1.0,
+        "mod_rate_scale_damping": 1.0,
+        "mod_rate_scale_output": 1.0,
+        "mod_rate_matrix": 0.0,  # Hz, independent of master for flexibility
+
+        # Second matrix for topology modulation
+        "mod_matrix2_type": "random_orthogonal",
+        "mod_matrix2_seed": 137,
     }
 
 
@@ -86,4 +119,15 @@ PARAM_RANGES = {
     "output_gains": (0.0, 2.0),          # per-node
     "stereo_width": (0.0, 1.0),
     "node_pans": (-1.0, 1.0),            # per-node
+    # Modulation ranges
+    "mod_master_rate": (0.0, 1000.0),     # Hz — spans slow to audio-rate
+    "mod_depth_delay": (0.0, 100.0),      # samples
+    "mod_depth_damping": (0.0, 0.5),      # coefficient offset
+    "mod_depth_output": (0.0, 1.0),       # gain multiplier offset
+    "mod_depth_matrix": (0.0, 1.0),       # blend fraction
+    "mod_correlation": (0.0, 1.0),
+    "mod_rate_scale_delay": (0.01, 10.0),
+    "mod_rate_scale_damping": (0.01, 10.0),
+    "mod_rate_scale_output": (0.01, 10.0),
+    "mod_rate_matrix": (0.0, 1000.0),
 }

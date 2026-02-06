@@ -1,0 +1,17 @@
+{
+  "mode": 0,
+  "loss": 0.3,
+  "speed": 0.5,
+  "crush": 0.5,
+  "decimate": 0.35,
+  "filter_type": 1,
+  "filter_freq": 1800.0,
+  "filter_width": 0.7,
+  "filter_slope": 0,
+  "threshold": 0.3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Crush + decimate + bandpass — early text-to-speech synthesis quality"
+  }
+}

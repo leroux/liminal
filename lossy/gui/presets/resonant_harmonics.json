@@ -1,0 +1,19 @@
+{
+  "mode": 1,
+  "loss": 0.5,
+  "speed": 0.2,
+  "filter_type": 1,
+  "filter_freq": 800.0,
+  "filter_width": 0.2,
+  "filter_slope": 2,
+  "loss_gain": 0.75,
+  "auto_gain": 0.8,
+  "verb": 0.3,
+  "decay": 0.6,
+  "verb_position": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Inverse mode + resonant bandpass — isolates and amplifies hidden harmonic content"
+  }
+}

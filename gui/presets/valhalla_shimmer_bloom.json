@@ -1,15 +1,60 @@
 {
-  "delay_times": [2003, 2503, 2789, 3229, 3571, 3989, 4547, 4909],
-  "damping_coeffs": [0.08, 0.10, 0.08, 0.12, 0.08, 0.10, 0.12, 0.08],
+  "delay_times": [
+    2003,
+    2503,
+    2789,
+    3229,
+    3571,
+    3989,
+    4547,
+    4909
+  ],
+  "damping_coeffs": [
+    0.08,
+    0.1,
+    0.08,
+    0.12,
+    0.08,
+    0.1,
+    0.12,
+    0.08
+  ],
   "feedback_gain": 0.88,
-  "input_gains": [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125],
-  "output_gains": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+  "input_gains": [
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125
+  ],
+  "output_gains": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
   "pre_delay": 662,
-  "diffusion": 0.50,
+  "diffusion": 0.5,
   "diffusion_stages": 4,
-  "diffusion_delays": [279, 418, 619, 853],
-  "wet_dry": 0.70,
-  "saturation": 0.10,
+  "diffusion_delays": [
+    279,
+    418,
+    619,
+    853
+  ],
+  "wet_dry": 0.7,
+  "saturation": 0.1,
   "matrix_type": "householder",
-  "matrix_seed": 42
+  "matrix_seed": 42,
+  "_meta": {
+    "category": "Ambient",
+    "description": "Valhalla Shimmer bloom \u2014 pitch-shifted ethereal trails"
+  }
 }

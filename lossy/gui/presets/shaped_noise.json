@@ -1,0 +1,29 @@
+{
+  "mode": 0,
+  "loss": 0.55,
+  "speed": 0.3,
+  "global_amount": 1.0,
+  "phase_loss": 0.0,
+  "quantizer": 0,
+  "pre_echo": 0.0,
+  "noise_shape": 0.9,
+  "crush": 0.0,
+  "decimate": 0.0,
+  "packets": 0,
+  "packet_rate": 0.0,
+  "packet_size": 30.0,
+  "filter_type": 1,
+  "filter_freq": 3000.0,
+  "filter_width": 0.6,
+  "filter_slope": 1,
+  "verb": 0.0,
+  "freeze": 0,
+  "freeze_mode": 0,
+  "freezer": 1.0,
+  "gate": 0.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Envelope-following noise shaping \u2014 sculpted quantization noise"
+  }
+}

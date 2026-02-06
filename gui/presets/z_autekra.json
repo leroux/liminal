@@ -145,5 +145,9 @@
       1.9444966585254206,
       -1.8825701550632514
     ]
-  ]
+  ],
+  "_meta": {
+    "category": "ML Generated",
+    "description": "ML-discovered Autechre-like texture"
+  }
 }

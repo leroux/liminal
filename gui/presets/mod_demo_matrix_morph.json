@@ -1,0 +1,115 @@
+{
+  "delay_times": [
+    1764,
+    2205,
+    2646,
+    3087,
+    3528,
+    3969,
+    4410,
+    4851
+  ],
+  "damping_coeffs": [
+    0.35,
+    0.35,
+    0.35,
+    0.35,
+    0.35,
+    0.35,
+    0.35,
+    0.35
+  ],
+  "feedback_gain": 0.9,
+  "input_gains": [
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125
+  ],
+  "output_gains": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "pre_delay": 662,
+  "diffusion": 0.5,
+  "diffusion_stages": 4,
+  "diffusion_delays": [
+    234,
+    349,
+    516,
+    710
+  ],
+  "wet_dry": 0.6,
+  "saturation": 0.0,
+  "matrix_type": "householder",
+  "node_pans": [
+    -1.0,
+    -0.714,
+    -0.429,
+    -0.143,
+    0.143,
+    0.429,
+    0.714,
+    1.0
+  ],
+  "stereo_width": 1.0,
+  "mod_master_rate": 0.5,
+  "mod_depth_delay": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "mod_depth_damping": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "mod_depth_output": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "mod_depth_matrix": 1.0,
+  "mod_waveform": 0,
+  "mod_correlation": 1.0,
+  "mod_rate_matrix": 0.5,
+  "mod_node_rate_mult": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "_meta": {
+    "category": "Modulated",
+    "description": "Matrix topology morphing \u2014 shifting feedback paths"
+  }
+}

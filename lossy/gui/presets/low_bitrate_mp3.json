@@ -1,0 +1,22 @@
+{
+  "mode": 0,
+  "loss": 0.65,
+  "speed": 0.25,
+  "global_amount": 1.0,
+  "packets": 0,
+  "packet_rate": 0.0,
+  "packet_size": 30.0,
+  "filter_type": 0,
+  "filter_freq": 1000.0,
+  "filter_width": 0.5,
+  "filter_slope": 1,
+  "verb": 0.0,
+  "freeze": 0,
+  "freeze_mode": 0,
+  "gate": 0.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Codec",
+    "description": "Moderate loss \u2014 sounds like a 64kbps MP3"
+  }
+}
