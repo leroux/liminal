@@ -1,0 +1,17 @@
+{
+  "mode": 0,
+  "loss": 0.4,
+  "speed": 0.05,
+  "verb": 0.6,
+  "decay": 0.7,
+  "verb_position": 0,
+  "bounce": 1,
+  "bounce_target": 4,
+  "bounce_rate": 0.1,
+  "auto_gain": 0.3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Modulated",
+    "description": "LFO on verb \u2014 reverb fades in and out slowly"
+  }
+}

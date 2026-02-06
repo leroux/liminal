@@ -1,0 +1,15 @@
+{
+  "mode": 0,
+  "loss": 0.6,
+  "speed": 0.25,
+  "quantizer": 1,
+  "threshold": 0.05,
+  "auto_gain": 1.0,
+  "loss_gain": 0.6,
+  "weighting": 0.8,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Codec",
+    "description": "Compand quantizer + heavy limiting + full auto gain"
+  }
+}

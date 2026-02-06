@@ -1,0 +1,22 @@
+{
+  "mode": 0,
+  "loss": 0.2,
+  "speed": 0.3,
+  "global_amount": 0.6,
+  "packets": 0,
+  "packet_rate": 0.0,
+  "packet_size": 30.0,
+  "filter_type": 0,
+  "filter_freq": 1000.0,
+  "filter_width": 0.5,
+  "filter_slope": 1,
+  "verb": 0.0,
+  "freeze": 0,
+  "freeze_mode": 0,
+  "gate": 0.0,
+  "wet_dry": 0.8,
+  "_meta": {
+    "category": "Codec",
+    "description": "Light loss \u2014 gentle warmth like a high-bitrate encode"
+  }
+}

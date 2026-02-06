@@ -134,5 +134,9 @@
       0.12396115311262926,
       0.3816952871128328
     ]
-  ]
+  ],
+  "_meta": {
+    "category": "Experimental",
+    "description": "Custom feedback matrix \u2014 resonant, unpredictable"
+  }
 }

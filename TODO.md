@@ -80,24 +80,25 @@
   - [x] Update playback and WAV export for stereo
 
 ## Phase 3: Time-Varying Parameters (Dynamic FDN)
-- [ ] **Modulation System**
-  - [ ] LFO generator (sine, triangle, sample-and-hold, envelope-follower)
-  - [ ] Per-parameter modulation: depth, rate, waveform, phase
-  - [ ] Structured modulation (global master rate, per-node multipliers, correlation param)
-- [ ] **Modulatable Parameters**
-  - [ ] Delay time modulation (most impactful)
-  - [ ] Damping coefficient modulation
-  - [ ] Feedback matrix coefficient modulation
-  - [ ] Output tap gain modulation
-- [ ] **Three Timescales**
-  - [ ] Slow (0.01-0.5 Hz) — character evolves over seconds
-  - [ ] Medium/LFO (0.5-20 Hz) — eliminates metallic ringing, breathing quality
-  - [ ] Fast/audio-rate (20 Hz+) — FM-like sidebands, novel territory
-- [ ] **Integration**
-  - [ ] Extend `engine/fdn.py` -> `engine/fdn_modulated.py`
-  - [ ] Extend params dict with modulation parameters
-  - [ ] Extend GUI with modulation controls
-  - [ ] Hand-discover several interesting modulation configurations
+- [x] **Modulation System**
+  - [x] LFO generator (sine, triangle, sample-and-hold)
+  - [x] Per-parameter modulation: depth, rate, waveform, phase
+  - [x] Structured modulation (global master rate, per-node multipliers, correlation param)
+- [x] **Modulatable Parameters**
+  - [x] Delay time modulation (most impactful)
+  - [x] Damping coefficient modulation
+  - [x] Feedback matrix coefficient modulation (blend between two matrices)
+  - [x] Output tap gain modulation
+- [x] **Three Timescales**
+  - [x] Slow (0.01-0.5 Hz) — character evolves over seconds
+  - [x] Medium/LFO (0.5-20 Hz) — eliminates metallic ringing, breathing quality
+  - [x] Fast/audio-rate (20 Hz+) — FM-like sidebands, novel territory
+- [x] **Integration**
+  - [x] `engine/numba_fdn_mod.py` — modulated FDN engine with Numba JIT
+  - [x] `engine/fdn.py` auto-routes to modulated path when modulation active
+  - [x] Extend params dict with modulation parameters
+  - [x] Extend GUI with modulation controls (scrollable params page)
+  - [x] 3 modulation presets: lush_chorus_room, breathing_space, fm_alien_texture
 
 ## Phase 4: ML-Assisted Exploration
 - [ ] **Quality Evaluation**
@@ -141,7 +142,7 @@
 
 
 # extras
-- [ ] lock parameters so that randomize does not change them
+- [x] lock parameters so that randomize does not change them
 - The gold-standard export
 
 Format: WAV (PCM, not compressed)

@@ -145,5 +145,9 @@
       0.003475376040218525,
       0.42182402809460723
     ]
-  ]
+  ],
+  "_meta": {
+    "category": "ML Generated",
+    "description": "ML variant 3 \u2014 deeper exploration"
+  }
 }

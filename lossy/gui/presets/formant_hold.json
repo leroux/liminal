@@ -1,0 +1,18 @@
+{
+  "mode": 0,
+  "loss": 0.35,
+  "speed": 0.15,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.7,
+  "filter_type": 1,
+  "filter_freq": 1200.0,
+  "filter_width": 0.35,
+  "filter_slope": 1,
+  "auto_gain": 0.4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Slushy freeze + narrow bandpass — captures and holds vocal formant region"
+  }
+}

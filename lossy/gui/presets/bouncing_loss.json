@@ -1,0 +1,14 @@
+{
+  "mode": 0,
+  "loss": 0.75,
+  "speed": 0.15,
+  "bounce": 1,
+  "bounce_target": 0,
+  "bounce_rate": 0.25,
+  "auto_gain": 0.4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Modulated",
+    "description": "LFO sweeps loss \u2014 rhythmic clean/degraded cycling"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "mode": 0,
+  "loss": 0.45,
+  "speed": 0.5,
+  "global_amount": 1.0,
+  "packets": 1,
+  "packet_rate": 0.2,
+  "packet_size": 25.0,
+  "filter_type": 1,
+  "filter_freq": 1200.0,
+  "filter_width": 0.3,
+  "filter_slope": 2,
+  "verb": 0.0,
+  "freeze": 0,
+  "freeze_mode": 0,
+  "gate": 0.03,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Communication",
+    "description": "Bandpass 96dB slope + gate \u2014 lo-fi phone line"
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "delay_times": [
+    882,
+    1103,
+    1323,
+    1544,
+    1764,
+    1984,
+    2205,
+    2425
+  ],
+  "damping_coeffs": [
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2,
+    0.2
+  ],
+  "feedback_gain": 0.85,
+  "input_gains": [
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125
+  ],
+  "output_gains": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "pre_delay": 441,
+  "diffusion": 0.45,
+  "diffusion_stages": 4,
+  "diffusion_delays": [
+    234,
+    349,
+    516,
+    710
+  ],
+  "wet_dry": 0.75,
+  "saturation": 0.3,
+  "matrix_type": "householder",
+  "node_pans": [
+    -1.0,
+    -0.714,
+    -0.429,
+    -0.143,
+    0.143,
+    0.429,
+    0.714,
+    1.0
+  ],
+  "stereo_width": 1.0,
+  "mod_master_rate": 50.0,
+  "mod_depth_delay": [
+    100.0,
+    100.0,
+    100.0,
+    100.0,
+    100.0,
+    100.0,
+    100.0,
+    100.0
+  ],
+  "mod_depth_damping": [
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.5
+  ],
+  "mod_depth_output": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "mod_depth_matrix": 1.0,
+  "mod_waveform": 0,
+  "mod_correlation": 0.0,
+  "mod_node_rate_mult": [
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    1.0,
+    2.0,
+    3.0,
+    4.0
+  ],
+  "_meta": {
+    "category": "Modulated",
+    "description": "All modulation maxed \u2014 chaotic, unstable texture"
+  }
+}

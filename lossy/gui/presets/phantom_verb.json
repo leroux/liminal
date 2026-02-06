@@ -1,0 +1,16 @@
+{
+  "mode": 1,
+  "loss": 0.55,
+  "speed": 0.0,
+  "verb": 0.9,
+  "decay": 0.9,
+  "verb_position": 1,
+  "loss_gain": 0.7,
+  "auto_gain": 0.5,
+  "gate": 0.15,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Ghost / Residue",
+    "description": "Inverse mode + post verb \u2014 ghostly reverbed residuals"
+  }
+}

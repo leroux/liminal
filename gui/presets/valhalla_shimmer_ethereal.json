@@ -1,15 +1,60 @@
 {
-  "delay_times": [1579, 1973, 2207, 2557, 2833, 3163, 3613, 3907],
-  "damping_coeffs": [0.12, 0.14, 0.12, 0.16, 0.12, 0.14, 0.16, 0.12],
+  "delay_times": [
+    1579,
+    1973,
+    2207,
+    2557,
+    2833,
+    3163,
+    3613,
+    3907
+  ],
+  "damping_coeffs": [
+    0.12,
+    0.14,
+    0.12,
+    0.16,
+    0.12,
+    0.14,
+    0.16,
+    0.12
+  ],
   "feedback_gain": 0.93,
-  "input_gains": [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125],
-  "output_gains": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+  "input_gains": [
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125
+  ],
+  "output_gains": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
   "pre_delay": 441,
-  "diffusion": 0.70,
+  "diffusion": 0.7,
   "diffusion_stages": 4,
-  "diffusion_delays": [233, 348, 515, 710],
+  "diffusion_delays": [
+    233,
+    348,
+    515,
+    710
+  ],
   "wet_dry": 0.75,
   "saturation": 0.18,
   "matrix_type": "householder",
-  "matrix_seed": 42
+  "matrix_seed": 42,
+  "_meta": {
+    "category": "Ambient",
+    "description": "Valhalla Shimmer ethereal \u2014 delicate, crystalline tails"
+  }
 }

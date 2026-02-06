@@ -1,0 +1,12 @@
+{
+  "mode": 0,
+  "loss": 0.7,
+  "speed": 0.0,
+  "weighting": 0.0,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Equal frequency weighting \u2014 uniform spectral destruction"
+  }
+}

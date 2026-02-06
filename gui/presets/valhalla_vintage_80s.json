@@ -1,15 +1,60 @@
 {
-  "delay_times": [1553, 1941, 2159, 2507, 2779, 3101, 3541, 3823],
-  "damping_coeffs": [0.35, 0.38, 0.35, 0.40, 0.35, 0.38, 0.40, 0.35],
+  "delay_times": [
+    1553,
+    1941,
+    2159,
+    2507,
+    2779,
+    3101,
+    3541,
+    3823
+  ],
+  "damping_coeffs": [
+    0.35,
+    0.38,
+    0.35,
+    0.4,
+    0.35,
+    0.38,
+    0.4,
+    0.35
+  ],
   "feedback_gain": 0.85,
-  "input_gains": [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125],
-  "output_gains": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+  "input_gains": [
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125,
+    0.125
+  ],
+  "output_gains": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
   "pre_delay": 551,
   "diffusion": 0.55,
   "diffusion_stages": 4,
-  "diffusion_delays": [177, 265, 392, 540],
+  "diffusion_delays": [
+    177,
+    265,
+    392,
+    540
+  ],
   "wet_dry": 0.45,
   "saturation": 0.08,
   "matrix_type": "hadamard",
-  "matrix_seed": 42
+  "matrix_seed": 42,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "VintageVerb 80s \u2014 bright digital, gated character"
+  }
 }

@@ -145,5 +145,9 @@
       0.6082251123767582,
       -0.19116062420454608
     ]
-  ]
+  ],
+  "_meta": {
+    "category": "ML Generated",
+    "description": "ML variant 2 \u2014 shifted parameter space"
+  }
 }
