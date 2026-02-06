@@ -1,0 +1,15 @@
+{
+  "delay_times": [487, 613, 743, 877, 1013, 1153, 1303, 1447],
+  "damping_coeffs": [0.18, 0.20, 0.18, 0.22, 0.18, 0.20, 0.22, 0.18],
+  "feedback_gain": 0.78,
+  "input_gains": [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125],
+  "output_gains": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+  "pre_delay": 0,
+  "diffusion": 0.68,
+  "diffusion_stages": 4,
+  "diffusion_delays": [88, 132, 195, 269],
+  "wet_dry": 0.40,
+  "saturation": 0.0,
+  "matrix_type": "householder",
+  "matrix_seed": 42
+}

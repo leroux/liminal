@@ -44,7 +44,10 @@ def load_wav(path):
 
 
 def save_wav(path, audio, sr=SR):
-    """Save float64 audio as 16-bit WAV, with peak normalization."""
+    """Save float64 audio as 16-bit WAV, with peak normalization.
+
+    Handles both mono (n_samples,) and stereo (n_samples, 2) arrays.
+    """
     peak = np.max(np.abs(audio))
     if peak > 1.0:
         print(f"  Peak {peak:.2f} exceeds 1.0, normalizing.")
@@ -101,7 +104,8 @@ def main():
     output = render_fdn(audio_padded, params)
     elapsed = time.time() - t0
     realtime = len(audio_padded) / SR
-    print(f"  {realtime:.1f}s audio in {elapsed:.2f}s ({realtime/elapsed:.1f}x realtime)")
+    ch_str = "stereo" if output.ndim == 2 else "mono"
+    print(f"  {realtime:.1f}s audio in {elapsed:.2f}s ({realtime/elapsed:.1f}x realtime) [{ch_str}]")
 
     # Save
     save_wav(args.output, output, SR)

@@ -54,9 +54,36 @@ def default_params() -> dict:
         # Wet/dry mix. 0=fully dry, 1=fully wet
         "wet_dry": 0.5,
 
+        # Saturation (tanh soft clipping in feedback loop).
+        # 0=linear (classic FDN), 1=full tanh. Allows feedback_gain > 1.0
+        # without explosion — creates drones, distortion, metallic textures.
+        "saturation": 0.0,
+
         # Feedback matrix topology
         # Options: householder, hadamard, diagonal, random_orthogonal,
         #          circulant, stautner_puckette
         "matrix_type": "householder",
         "matrix_seed": 42,  # only used for random_orthogonal
+
+        # Stereo output: per-node pan positions (-1=left, 0=center, +1=right)
+        "node_pans": [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0],
+
+        # Stereo width: 0=mono (all pans collapse to center), 1=full stereo
+        "stereo_width": 1.0,
     }
+
+
+# Ranges for ML exploration (min, max) — continuous params only.
+PARAM_RANGES = {
+    "feedback_gain": (0.0, 2.0),
+    "wet_dry": (0.0, 1.0),
+    "diffusion": (0.0, 0.7),
+    "saturation": (0.0, 1.0),
+    "pre_delay": (0, int(250 / 1000 * SR)),
+    "damping_coeffs": (0.0, 0.99),       # per-node, same range
+    "delay_times": (1, int(300 / 1000 * SR)),  # per-node
+    "input_gains": (0.0, 0.5),           # per-node
+    "output_gains": (0.0, 2.0),          # per-node
+    "stereo_width": (0.0, 1.0),
+    "node_pans": (-1.0, 1.0),            # per-node
+}

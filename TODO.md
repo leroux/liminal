@@ -60,14 +60,24 @@
   - [x] XY pad (2D) with assignable axes (e.g., x=feedback, y=damping)
   - [x] Preset save/load (JSON) with preset browser tab
   - [x] Matrix topology selector (dropdown)
-- [ ] **Performance Optimization**
-  - [ ] Numba `@jit` on inner FDN loop — target blocksize=256 (~6ms)
+- [x] **Performance Optimization**
+  - [x] Numba `@jit` on inner FDN loop — target blocksize=256 (~6ms)
   - [ ] (Optional) C inner loop via ctypes — target blocksize=128 (~3ms)
 - [ ] **Deliverables check**
   - [ ] `audio/realtime.py`
   - [ ] `gui/gui.py`
   - [ ] `gui/xy_pad.py`
   - [ ] `gui/presets/` directory with JSON presets
+
+## Phase 2b: Audio Quality & Output Improvements
+- [x] **DC Blocking Filter**
+  - [x] Add one-pole high-pass (~5 Hz) in feedback path per node
+  - [x] Prevents DC offset accumulation with saturation/high feedback
+- [x] **Stereo Output**
+  - [x] Pan 8 output taps across stereo field
+  - [x] Return 2-channel array from render_fdn
+  - [x] Add stereo width knob to GUI (0=mono, 1=full stereo)
+  - [x] Update playback and WAV export for stereo
 
 ## Phase 3: Time-Varying Parameters (Dynamic FDN)
 - [ ] **Modulation System**
@@ -128,3 +138,18 @@
   - [ ] VST3 format
   - [ ] AU format (macOS)
   - [ ] Signal flow documentation
+
+
+# extras
+- [ ] lock parameters so that randomize does not change them
+- The gold-standard export
+
+Format: WAV (PCM, not compressed)
+
+Bit depth: 24-bit
+
+Sample rate: 44.1 kHz or 48 kHz
+
+Dither: Off (unless you’re going from higher bit depth down to 24-bit)
+
+That combo gives you excellent dynamic range, low noise, and full compatibility with studios, plugins, and distributors.

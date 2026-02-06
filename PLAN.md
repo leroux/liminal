@@ -170,6 +170,24 @@ def render_fdn(input_audio: np.ndarray, params: dict) -> np.ndarray:
 
 ---
 
+## Phase 2b: Audio Quality & Output Improvements
+
+### DC Blocking Filter
+- Feedback loops with saturation accumulate DC offset over time — output drifts, wastes headroom
+- Fix: one-pole high-pass filter (~5 Hz cutoff) in the feedback path, per node
+- `y[n] = x[n] - x[n-1] + R * y[n-1]` where `R = 1 - (2π * 5 / SR)` ≈ 0.9993
+- Cheap (one multiply per sample per node), essential for stability with saturation enabled
+
+### Stereo Output
+- Current engine is mono — reverb sounds flat and narrow
+- Pan the 8 output taps across the stereo field (e.g. node 0 hard left → node 7 hard right, or alternating L/R)
+- Returns a 2-channel array instead of mono
+- Pan law options: linear, equal-power, or per-node pan knob
+- Small change to output summing stage — the FDN loop itself stays mono internally
+- GUI: add a stereo width knob (0 = mono, 1 = full stereo)
+
+---
+
 ## Phase 3: Time-Varying Parameters (Dynamic FDN)
 
 **Goal:** Add modulation — parameters that change over time. This transforms the FDN from a static system to a living, breathing one. The parameter space explodes, creating the vast territory for ML to explore.
