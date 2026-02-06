@@ -88,6 +88,14 @@ def stautner_puckette(n: int) -> np.ndarray:
     return M
 
 
+def zero(n: int) -> np.ndarray:
+    """Zero matrix — no feedback at all.
+
+    One echo per delay line, then silence. Not unitary.
+    """
+    return np.zeros((n, n))
+
+
 # ---------------------------------------------------------------------------
 # Fast apply functions (avoid full matrix multiply when possible)
 # ---------------------------------------------------------------------------
@@ -124,17 +132,22 @@ MATRIX_TYPES = {
     "hadamard": (hadamard, apply_hadamard),
     "diagonal": (diagonal, None),
     "random_orthogonal": (random_orthogonal, None),
+    "zero": (zero, None),
     "circulant": (circulant_shift, None),
     "stautner_puckette": (stautner_puckette, None),
 }
 
 
-def build_matrix_apply(name: str, n: int, seed: int = 42):
+def build_matrix_apply(name: str, n: int, seed: int = 42, custom_matrix=None):
     """Build a matrix and return a fast apply function.
 
     Returns:
         apply_fn: callable that takes an n-vector and returns an n-vector
     """
+    if name == "custom":
+        mat = np.array(custom_matrix, dtype=np.float64)
+        return lambda x: apply_matrix(mat, x)
+
     if name not in MATRIX_TYPES:
         raise ValueError(f"Unknown matrix type '{name}'. Options: {list(MATRIX_TYPES.keys())}")
 
@@ -149,3 +162,29 @@ def build_matrix_apply(name: str, n: int, seed: int = 42):
     else:
         mat = constructor(n)
     return lambda x: apply_matrix(mat, x)
+
+
+def get_matrix(name: str, n: int, seed: int = 42) -> np.ndarray:
+    """Get the actual matrix array for a named topology."""
+    if name not in MATRIX_TYPES:
+        raise ValueError(f"Unknown matrix type '{name}'.")
+    constructor = MATRIX_TYPES[name][0]
+    if name == "random_orthogonal":
+        return constructor(n, seed=seed)
+    return constructor(n)
+
+
+def nearest_unitary(matrix: np.ndarray) -> np.ndarray:
+    """Project a matrix to the nearest unitary (orthogonal) matrix via SVD.
+
+    Given M, returns U @ V^T where M = U @ S @ V^T.
+    This is the closest orthogonal matrix in Frobenius norm.
+    """
+    U, _, Vt = np.linalg.svd(matrix)
+    return U @ Vt
+
+
+def is_unitary(matrix: np.ndarray, tol: float = 1e-6) -> bool:
+    """Check if a matrix is unitary (M @ M^T ≈ I)."""
+    product = matrix @ matrix.T
+    return np.allclose(product, np.eye(len(matrix)), atol=tol)

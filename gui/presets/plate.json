@@ -50,6 +50,7 @@
     710
   ],
   "wet_dry": 0.4,
+  "saturation": 0.0,
   "matrix_type": "householder",
   "matrix_seed": 42
 }
