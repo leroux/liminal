@@ -15,10 +15,11 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 
-from engine.params import (
+from lossy.engine.params import (
     SR,
     default_params,
     bypass_params,
+    migrate_legacy_params,
     PARAM_RANGES,
     PARAM_SECTIONS,
     CHOICE_RANGES,
@@ -32,7 +33,11 @@ from engine.params import (
     BOUNCE_TARGETS,
     BOUNCE_TARGET_NAMES,
 )
-from engine.lossy import render_lossy
+from lossy.engine.lossy import render_lossy
+
+from shared.llm_guide_text import LOSSY_GUIDE, LOSSY_PARAM_DESCRIPTIONS
+from shared.llm_tuner import LLMTuner
+from shared.streaming import safety_check, normalize_output
 
 PRESET_DIR = os.path.join(os.path.dirname(__file__), "presets")
 DEFAULT_SOURCE = os.path.join(
@@ -53,6 +58,7 @@ class LossyGUI:
         self.source_audio = None
         self.rendered_audio = None
         self.rendered_params = None
+        self.rendered_warning = ""
         self.rendering = False
         self.sliders = {}
         self.locks = {}
@@ -61,6 +67,14 @@ class LossyGUI:
         self._autoplay_id = None
         self._load_wav(DEFAULT_SOURCE)
         self._build_ui()
+
+        self.llm = LLMTuner(
+            guide_text=LOSSY_GUIDE,
+            param_descriptions=LOSSY_PARAM_DESCRIPTIONS,
+            param_ranges=PARAM_RANGES,
+            default_params_fn=default_params,
+            root=self.root,
+        )
 
         # Global mousewheel handler — routes to scale under cursor
         self.root.bind_all("<MouseWheel>", self._on_global_scroll)
@@ -85,6 +99,19 @@ class LossyGUI:
             audio = data.astype(np.float64) / 2147483648.0
         else:
             audio = data.astype(np.float64)
+        # Resample to engine SR if needed (engine assumes SR throughout)
+        if sr != SR:
+            from scipy.signal import resample_poly
+            from math import gcd
+            g = gcd(SR, sr)
+            up, down = SR // g, sr // g
+            if audio.ndim == 2:
+                channels = []
+                for ch in range(audio.shape[1]):
+                    channels.append(resample_poly(audio[:, ch], up, down))
+                audio = np.column_stack(channels)
+            else:
+                audio = resample_poly(audio, up, down)
         # Keep stereo as (samples, 2) — don't downmix
         self.source_audio = audio
 
@@ -143,9 +170,12 @@ class LossyGUI:
     # ------------------------------------------------------------------
 
     def _build_params_page(self):
-        # Scrollable single-column layout
-        canvas = tk.Canvas(self.params_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self.params_frame, orient="vertical", command=canvas.yview)
+        # Scrollable single-column layout (in a container so AI prompt sits below)
+        scroll_container = ttk.Frame(self.params_frame)
+        scroll_container.pack(side="top", fill="both", expand=True)
+
+        canvas = tk.Canvas(scroll_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
         f = ttk.Frame(canvas)
 
         f.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -187,11 +217,16 @@ class LossyGUI:
         r += 1
 
         r = self._add_slider(f, r, "loss", "Loss", 0.0, 1.0, self.params["loss"], length=SL)
-        r = self._add_slider(f, r, "speed", "Speed", 0.0, 1.0, self.params["speed"], length=SL)
+        r = self._add_slider(f, r, "window_size", "Window Size", 64, 16384, self.params["window_size"], length=SL, integer=True)
+        r = self._add_slider(f, r, "hop_divisor", "Hop Divisor", 1, 8, self.params["hop_divisor"], length=SL, integer=True)
+        r = self._add_slider(f, r, "n_bands", "Bands", 2, 64, self.params["n_bands"], length=SL, integer=True)
         r = self._add_slider(f, r, "global_amount", "Global", 0.0, 1.0, self.params["global_amount"], length=SL)
         r = self._add_slider(f, r, "phase_loss", "Phase", 0.0, 1.0, self.params["phase_loss"], length=SL)
         r = self._add_slider(f, r, "pre_echo", "Pre-Echo", 0.0, 1.0, self.params["pre_echo"], length=SL)
+        r = self._add_slider(f, r, "transient_ratio", "Transient Thr", 1.5, 20.0, self.params["transient_ratio"], length=SL)
         r = self._add_slider(f, r, "noise_shape", "Noise Shape", 0.0, 1.0, self.params["noise_shape"], length=SL)
+        r = self._add_slider(f, r, "hf_threshold", "HF Threshold", 0.0, 1.0, self.params["hf_threshold"], length=SL)
+        r = self._add_slider(f, r, "slushy_rate", "Slushy Rate", 0.001, 0.5, self.params["slushy_rate"], length=SL)
 
         ttk.Label(f, text="Quantizer").grid(row=r, column=0, sticky="w", padx=8)
         self._quantizer_var = tk.IntVar(value=self.params["quantizer"])
@@ -311,12 +346,15 @@ class LossyGUI:
         r += 1
 
         r = self._add_slider(f, r, "bounce_rate", "Rate", 0.0, 1.0, self.params["bounce_rate"], length=SL)
+        r = self._add_slider(f, r, "bounce_lfo_min", "LFO Min (Hz)", 0.01, 50.0, self.params["bounce_lfo_min"], length=SL)
+        r = self._add_slider(f, r, "bounce_lfo_max", "LFO Max (Hz)", 0.01, 50.0, self.params["bounce_lfo_max"], length=SL)
 
         # ---- Output ----
         r = self._add_separator(f, r)
         r = self._add_section_header(f, r, "output", "OUTPUT")
 
         r = self._add_slider(f, r, "wet_dry", "Wet / Dry", 0.0, 1.0, self.params["wet_dry"], length=SL)
+        r = self._add_slider(f, r, "tail_length", "Tail Length (s)", 0.0, 60.0, 2.0, length=SL)
 
         # Auto-play on discrete parameter change
         for var in [self._mode_var, self._quantizer_var, self._packets_var,
@@ -325,22 +363,53 @@ class LossyGUI:
                     self._bounce_target_var]:
             var.trace_add("write", lambda *_: self._schedule_autoplay())
 
+        # ============ AI TUNER (below scrollable params) ============
+        self._build_ai_prompt(self.params_frame)
+
     # ------------------------------------------------------------------
     # Slider helper
     # ------------------------------------------------------------------
 
-    def _add_slider(self, parent, row, key, label, lo, hi, value, length=280, log=False):
+    def _add_slider(self, parent, row, key, label, lo, hi, value, length=280, log=False, integer=False):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=4)
         var = tk.DoubleVar(value=value)
-        scale = ttk.Scale(parent, from_=lo, to=hi, variable=var, orient="horizontal", length=length)
-        scale.grid(row=row, column=1, sticky="ew", padx=4)
+        # Frame holding [min_label | scale | max_label]
+        slider_frame = ttk.Frame(parent)
+        slider_frame.grid(row=row, column=1, sticky="ew", padx=4)
+        min_text = self._fmt_val(lo, log, integer)
+        max_text = self._fmt_val(hi, log, integer)
+        ttk.Label(slider_frame, text=min_text, width=len(min_text)+1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
+        scale = ttk.Scale(slider_frame, from_=lo, to=hi, variable=var,
+                          orient="horizontal", length=length)
+        scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(slider_frame, text=max_text, width=len(max_text)+1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
         self._bind_scroll(scale, var, lo, hi)
-        val_lbl = ttk.Label(parent, text=self._fmt(value, log, lo, hi), width=10)
-        val_lbl.grid(row=row, column=2, sticky="w")
-        var.trace_add("write", lambda *_a, v=var, l=val_lbl, lg=log, _lo=lo, _hi=hi: l.config(text=self._fmt(v.get(), lg, _lo, _hi)))
+        # Typeable entry field
+        entry_var = tk.StringVar(value=self._fmt_val(value, log, integer))
+        entry = ttk.Entry(parent, textvariable=entry_var, width=8, justify="right")
+        entry.grid(row=row, column=2, sticky="w", padx=2)
+        # Sync slider → entry
+        def _on_slider_change(*_a, v=var, ev=entry_var, lg=log, intg=integer):
+            ev.set(self._fmt_val(v.get(), lg, intg))
+        var.trace_add("write", _on_slider_change)
+        # Sync entry → slider on Return
+        def _on_entry_return(event, v=var, ev=entry_var, _lo=lo, _hi=hi, intg=integer):
+            try:
+                val = int(ev.get()) if intg else float(ev.get())
+                val = max(_lo, min(_hi, val))
+                v.set(val)
+                self._schedule_autoplay()
+            except ValueError:
+                ev.set(self._fmt_val(v.get(), False, intg))
+        entry.bind("<Return>", _on_entry_return)
+        entry.bind("<FocusOut>", _on_entry_return)
         self.sliders[key] = var
         if log:
             var._log = True
+        if integer:
+            var._integer = True
         lock_var = tk.BooleanVar(value=False)
         self.locks[key] = lock_var
         ttk.Checkbutton(parent, variable=lock_var).grid(row=row, column=3, sticky="w", padx=2)
@@ -348,9 +417,15 @@ class LossyGUI:
         return row + 1
 
     @staticmethod
-    def _fmt(val, log, lo, hi):
-        if log and lo > 0 and hi > 0:
+    def _fmt_val(val, log=False, integer=False):
+        if integer:
+            return f"{int(round(val))}"
+        if log:
             return f"{val:.0f}"
+        if abs(val) >= 100:
+            return f"{val:.1f}"
+        if abs(val) >= 10:
+            return f"{val:.2f}"
         return f"{val:.3f}"
 
     def _bind_scroll(self, scale, var, lo, hi):
@@ -412,6 +487,93 @@ class LossyGUI:
             self.root.after_cancel(self._autoplay_id)
         self._autoplay_id = self.root.after(400, self._on_play)
 
+    # ------------------------------------------------------------------
+    # AI Tuner
+    # ------------------------------------------------------------------
+
+    def _build_ai_prompt(self, parent):
+        """Build the AI tuner widget group at the bottom of the params page."""
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(10, 5))
+        ttk.Label(parent, text="AI Tuner", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=5)
+
+        input_frame = ttk.Frame(parent)
+        input_frame.pack(fill="x", padx=5, pady=(2, 0))
+
+        self.ai_input = tk.Text(input_frame, height=2, wrap="word",
+                                bg="#2a2a3e", fg="#eeeeee", insertbackground="#eeeeee",
+                                font=("Helvetica", 11), relief="solid", bd=1)
+        self.ai_input.pack(fill="x", side="top")
+        self.ai_input.bind("<Shift-Return>", lambda e: (self._on_ask_claude(), "break"))
+
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill="x", padx=5, pady=(3, 0))
+        self.ai_ask_btn = ttk.Button(btn_frame, text="Ask Claude", command=self._on_ask_claude)
+        self.ai_ask_btn.pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Undo", command=self._on_ai_undo).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="New Session", command=self._on_ai_new_session).pack(side="left", padx=2)
+        ttk.Label(btn_frame, text="Shift+Enter to send", foreground="#666688",
+                  font=("Helvetica", 9)).pack(side="left", padx=8)
+        self.ai_status_var = tk.StringVar(value="")
+        ttk.Label(btn_frame, textvariable=self.ai_status_var).pack(side="left", padx=4)
+
+        self.ai_response = tk.Text(parent, height=8, wrap="word", state="disabled",
+                                   bg="#222233", fg="#dddddd", font=("Helvetica", 10),
+                                   relief="solid", bd=1)
+        self.ai_response.pack(fill="x", padx=5, pady=(3, 8))
+
+    def _on_ask_claude(self):
+        prompt = self.ai_input.get("1.0", "end-1c").strip()
+        if not prompt:
+            return
+        self.ai_status_var.set("Thinking...")
+        self.ai_ask_btn.configure(state="disabled")
+        # Show user message in response box
+        self.ai_response.configure(state="normal")
+        self.ai_response.insert("end", f"\n> {prompt}\n\n")
+        self.ai_response.configure(state="disabled")
+        self.ai_input.delete("1.0", "end")
+        current = self._read_params_from_ui()
+        self.llm.send_prompt(
+            prompt, current,
+            on_text=self._on_claude_text,
+            on_params=self._on_claude_params,
+            on_done=self._on_claude_done,
+            on_error=self._on_claude_error,
+        )
+
+    def _on_claude_text(self, text):
+        self.ai_response.configure(state="normal")
+        self.ai_response.insert("end", text)
+        self.ai_response.see("end")
+        self.ai_response.configure(state="disabled")
+        self.ai_status_var.set("")
+
+    def _on_claude_params(self, merged_params):
+        self._write_params_to_ui(merged_params)
+        self.ai_status_var.set("Applied params")
+        self._on_play()
+
+    def _on_claude_done(self):
+        self.ai_ask_btn.configure(state="normal")
+
+    def _on_claude_error(self, error_msg):
+        self.ai_status_var.set(f"Error: {error_msg[:80]}")
+        self.ai_ask_btn.configure(state="normal")
+
+    def _on_ai_undo(self):
+        prev = self.llm.undo()
+        if prev:
+            self._write_params_to_ui(prev)
+            self.ai_status_var.set("Reverted")
+            self._on_play()
+
+    def _on_ai_new_session(self):
+        self.llm.reset_session()
+        self.ai_response.configure(state="normal")
+        self.ai_response.delete("1.0", "end")
+        self.ai_response.configure(state="disabled")
+        self.ai_status_var.set("New session")
+
     def _reset_params(self):
         self._write_params_to_ui(bypass_params())
         self._on_play()
@@ -429,7 +591,9 @@ class LossyGUI:
                 continue
             if key not in self.sliders:
                 continue
-            if hasattr(self.sliders[key], '_log') and self.sliders[key]._log:
+            if hasattr(self.sliders[key], '_integer') and self.sliders[key]._integer:
+                val = random.randint(int(lo), int(hi))
+            elif hasattr(self.sliders[key], '_log') and self.sliders[key]._log:
                 val = 10 ** random.uniform(math.log10(max(lo, 1e-10)),
                                            math.log10(max(hi, 1e-10)))
             else:
@@ -480,6 +644,7 @@ class LossyGUI:
         self.preset_tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
         self.preset_tree.bind("<Double-1>", lambda e: self._on_load_preset(play=True))
+        self.preset_tree.bind("<Return>", lambda e: self._on_load_preset(play=True))
 
         # Right: buttons + description
         right = ttk.Frame(f)
@@ -560,6 +725,7 @@ class LossyGUI:
         with open(path) as fh:
             p = json.load(fh)
         p.pop("_meta", None)
+        migrate_legacy_params(p)
         full = default_params()
         full.update(p)
         self._write_params_to_ui(full)
@@ -825,8 +991,12 @@ class LossyGUI:
         h2("Core Controls")
         mapping("Loss knob", "Loss",
                 "Spectral quantization depth + psychoacoustic band gating intensity.")
-        mapping("Speed knob", "Speed",
-                "FFT window size. 0=slow (4096, darker, more smear) to 1=fast (256, garbled).")
+        mapping("Speed knob", "Window Size",
+                "FFT window size in samples. Large (4096) = dark smear, small (256) = garbled.")
+        mapping("(new)", "Hop Divisor",
+                "Overlap ratio = 1/hop_divisor. 4=75% overlap (default), 2=50%, 8=87.5%.")
+        mapping("(new)", "Bands",
+                "Number of Bark-like bands for gating. Fewer = coarser, more dramatic.")
         mapping("Global knob", "Global",
                 "Master intensity — scales Loss, Phase, Crush, Packets, Verb, Gate together.")
         body("")
@@ -852,8 +1022,14 @@ class LossyGUI:
                 "Uniform = classic. Compand = MP3-style power-law (|x|^0.75).")
         mapping("(codec artifact)", "Pre-Echo",
                 "Boost loss before transients, spreading noise ahead of attacks.")
+        mapping("(new)", "Transient Thr",
+                "Energy ratio for pre-echo detection. Lower = more sensitive to transients.")
         mapping("(codec internals)", "Noise Shape",
                 "Coarser quantization in spectral valleys, finer near peaks.")
+        mapping("(new)", "HF Threshold",
+                "Loss level where HF rolloff begins. 0=always roll off, 1=never. Default 0.3.")
+        mapping("(new)", "Slushy Rate",
+                "Freeze slushy drift speed. Low = slow morphing, high = tracks input closely.")
         body("")
 
         h2("Crush (time-domain degradation)")
@@ -899,7 +1075,7 @@ class LossyGUI:
         mapping("Freeze footswitch", "Freeze checkbox",
                 "Captures a spectral snapshot and holds it.")
         mapping("Freeze: slushy", "Freeze Mode: Slushy",
-                "Frozen spectrum slowly updates at a rate set by Speed.")
+                "Frozen spectrum slowly updates at Slushy Rate.")
         mapping("Freeze: solid", "Freeze Mode: Solid",
                 "Spectrum is truly frozen — static drone.")
         mapping("Freezer (hidden)", "Freezer",
@@ -923,9 +1099,11 @@ class LossyGUI:
         mapping("Ramping", "Bounce checkbox",
                 "Enables continuous LFO modulation of a chosen parameter.")
         mapping("Bounce target", "Target radio buttons",
-                "Which parameter the LFO modulates: Loss, Speed, Crush, etc.")
+                "Which parameter the LFO modulates: Loss, Window, Crush, etc.")
         mapping("Bounce rate", "Rate",
-                "LFO speed. 0=0.1 Hz (slow sweep), 1=5 Hz (fast wobble).")
+                "LFO speed. Maps 0-1 to LFO Min..LFO Max Hz range.")
+        mapping("(new)", "LFO Min / LFO Max",
+                "Hz range for bounce LFO. Default 0.1-5.0 Hz.")
         body("")
 
         h2("Output")
@@ -945,17 +1123,17 @@ class LossyGUI:
         body("1. Audio is windowed (Hann) and transformed to frequency domain via FFT.")
         body("2. Magnitudes are quantized (Uniform or Compand). Noise Shape varies the")
         body("   step size per bin — coarser in spectral valleys, finer near peaks.")
-        body("3. ~21 Bark-like bands are gated using psychoacoustic masking: bands with")
-        body("   less energy at ATH-insensitive frequencies are dropped first. Random")
+        body("3. N Bark-like bands (Bands param, default 21) are gated using psychoacoustic")
+        body("   masking: bands with less energy at ATH-insensitive frequencies are dropped first. Random")
         body("   perturbation ensures the frame-to-frame variation that creates the warble.")
         body("4. Phase is optionally quantized to N levels (Phase slider).")
         body("5. Pre-Echo boosts loss on frames preceding transients, spreading noise ahead.")
-        body("6. HF bandwidth is rolled off proportional to Loss (like low-bitrate MP3).")
-        body("7. IFFT + overlap-add (75%) reconstructs audio.")
+        body("6. HF bandwidth is rolled off when Loss > HF Threshold (like low-bitrate MP3).")
+        body("7. IFFT + overlap-add (overlap set by Hop Divisor) reconstructs audio.")
         body("8. Crush/Decimate, Packets, Filter, Verb, Gate, Limiter in time domain.")
         body("")
-        body("Window sizes: 4096 (93ms) / 2048 (46ms) / 1024 (23ms) / 512 (12ms) / 256 (6ms)")
-        body('The "Slow" dip switch on the pedal = Speed at 0 here (4096 window).')
+        body("Window Size is now direct (in samples). Common values: 4096 (93ms) / 2048 (46ms)")
+        body("  / 1024 (23ms) / 512 (12ms) / 256 (6ms). Any value 64-16384 is valid.")
         body("")
 
         h2("Presets to Try")
@@ -1045,46 +1223,57 @@ class LossyGUI:
 
         # Cache hit — just play
         if not self._params_changed(params):
+            sd.stop()
             sd.default.reset()
             sd.play(self.rendered_audio, SR)
-            self.status_var.set("Playing (cached)...")
+            dur = len(self.rendered_audio) / SR
+            self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
             return
 
-        # Render then play
+        self._render_and_play(params)
+
+    def _render_and_play(self, params):
+        """Render full buffer in background, then play with sd.play()."""
+        if self._autoplay_id is not None:
+            self.root.after_cancel(self._autoplay_id)
+            self._autoplay_id = None
         self.rendering = True
         self.status_var.set("Rendering...")
 
         def do_render():
             try:
-                output = render_lossy(self.source_audio, params)
-                # Safety checks
-                if not np.all(np.isfinite(output)):
-                    self.root.after(0, lambda: self.status_var.set("ERROR: non-finite output"))
+                tail_len = int(self.sliders["tail_length"].get() * SR)
+                if tail_len > 0:
+                    if self.source_audio.ndim == 2:
+                        tail = np.zeros((tail_len, self.source_audio.shape[1]))
+                    else:
+                        tail = np.zeros(tail_len)
+                    audio_in = np.concatenate([self.source_audio, tail])
+                else:
+                    audio_in = self.source_audio
+                output = render_lossy(audio_in, params)
+
+                ok, err = safety_check(output)
+                if not ok:
+                    self.root.after(0, lambda: self.status_var.set(err))
                     return
-                peak = np.max(np.abs(output))
-                if peak > 1e6:
-                    self.root.after(0, lambda: self.status_var.set(f"ERROR: output exploded (peak={peak:.0e})"))
-                    return
-                # RMS limiter (works for both mono and stereo)
-                if peak > 0:
-                    output = output / peak
-                rms = np.sqrt(np.mean(output ** 2))
-                target_rms = 0.2
-                if rms > target_rms:
-                    output *= target_rms / rms
-                output *= 0.9  # headroom
+
+                output, warning = normalize_output(output)
 
                 self.rendered_audio = output
+                self.rendered_warning = warning
                 self.rendered_params = params.copy()
-                self.root.after(0, self._draw_waveform)
-                self.root.after(0, self._draw_spectrum)
-                # Play immediately after render
-                self.root.after(0, lambda: self._play_rendered())
+                dur = len(output) / SR
+                self.root.after(0, lambda: (
+                    self._play_rendered(),
+                    self.status_var.set(f"Playing ({dur:.1f}s){warning}"),
+                    self._draw_waveform(),
+                    self._draw_spectrum()))
+                self.root.after(50, self._check_autoplay)
             except Exception as exc:
                 self.root.after(0, lambda: self.status_var.set(f"ERROR: {exc}"))
             finally:
                 self.rendering = False
-                self.root.after(0, self._check_autoplay)
 
         threading.Thread(target=do_render, daemon=True).start()
 
@@ -1101,5 +1290,8 @@ class LossyGUI:
             self.status_var.set("Playing dry...")
 
     def _on_stop(self):
+        if self._autoplay_id is not None:
+            self.root.after_cancel(self._autoplay_id)
+            self._autoplay_id = None
         sd.stop()
         self.status_var.set("Stopped")

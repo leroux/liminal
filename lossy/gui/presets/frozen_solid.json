@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.3,
-  "speed": 0.2,
+  "window_size": 2048,
   "global_amount": 1.0,
   "phase_loss": 0.2,
   "quantizer": 0,

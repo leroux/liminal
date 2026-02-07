@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.7,
-  "speed": 0.0,
+  "window_size": 4096,
   "weighting": 0.0,
   "auto_gain": 0.5,
   "wet_dry": 1.0,
