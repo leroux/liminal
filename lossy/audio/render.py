@@ -1,7 +1,7 @@
 """Offline WAV rendering for the Lossy plugin.
 
 Usage:
-    python audio/render.py input.wav output.wav [--preset preset.json] [--loss 0.7] [--speed 0.5]
+    python audio/render.py input.wav output.wav [--preset preset.json] [--loss 0.7] [--window_size 2048]
 """
 
 import argparse
@@ -10,7 +10,7 @@ import os
 import numpy as np
 from scipy.io import wavfile
 
-from engine.params import SR, default_params
+from engine.params import SR, default_params, migrate_legacy_params
 from engine.lossy import render_lossy
 
 
@@ -22,6 +22,20 @@ def load_wav(path):
         audio = data.astype(np.float64) / 2147483648.0
     else:
         audio = data.astype(np.float64)
+    # Resample to engine SR if needed (engine assumes SR throughout)
+    if sr != SR:
+        from scipy.signal import resample_poly
+        from math import gcd
+        g = gcd(SR, sr)
+        up, down = SR // g, sr // g
+        if audio.ndim == 2:
+            channels = []
+            for ch in range(audio.shape[1]):
+                channels.append(resample_poly(audio[:, ch], up, down))
+            audio = np.column_stack(channels)
+        else:
+            audio = resample_poly(audio, up, down)
+        sr = SR
     # Keep stereo as (samples, 2) — don't downmix
     return audio, sr
 
@@ -47,7 +61,7 @@ def main():
     parser.add_argument("output", help="Output WAV file")
     parser.add_argument("--preset", help="Preset JSON file")
     parser.add_argument("--loss", type=float)
-    parser.add_argument("--speed", type=float)
+    parser.add_argument("--window_size", type=int)
     parser.add_argument("--mode", type=int, choices=[0, 1, 2])
     parser.add_argument("--verb", type=float)
     parser.add_argument("--wet", type=float)
@@ -56,12 +70,13 @@ def main():
     params = default_params()
     if args.preset:
         preset = load_preset(args.preset)
+        migrate_legacy_params(preset)
         params.update(preset)
 
     if args.loss is not None:
         params["loss"] = args.loss
-    if args.speed is not None:
-        params["speed"] = args.speed
+    if args.window_size is not None:
+        params["window_size"] = args.window_size
     if args.mode is not None:
         params["mode"] = args.mode
     if args.verb is not None:

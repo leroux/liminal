@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.7,
-  "speed": 0.3,
+  "window_size": 2048,
   "phase_loss": 0.85,
   "quantizer": 1,
   "noise_shape": 0.6,
@@ -11,6 +11,6 @@
   "wet_dry": 1.0,
   "_meta": {
     "category": "Sound Design",
-    "description": "Extreme phase quantization + noise shaping — synthetic vocoder-like processing"
+    "description": "Extreme phase quantization + noise shaping \u2014 synthetic vocoder-like processing"
   }
 }

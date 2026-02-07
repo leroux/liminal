@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.25,
-  "speed": 0.9,
+  "window_size": 256,
   "packets": 2,
   "packet_rate": 0.5,
   "packet_size": 15.0,
@@ -10,6 +10,6 @@
   "wet_dry": 1.0,
   "_meta": {
     "category": "Sound Design",
-    "description": "Tiny packet repeats + fast FFT — granular synthesis texture from any input"
+    "description": "Tiny packet repeats + fast FFT \u2014 granular synthesis texture from any input"
   }
 }

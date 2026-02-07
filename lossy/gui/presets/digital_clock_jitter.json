@@ -1,7 +1,7 @@
 {
   "mode": 2,
   "loss": 0.6,
-  "speed": 0.4,
+  "window_size": 1024,
   "global_amount": 1.0,
   "packets": 0,
   "packet_rate": 0.0,

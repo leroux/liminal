@@ -22,7 +22,7 @@ Additional features beyond basic STFT:
 """
 
 import numpy as np
-from engine.params import SR, WINDOW_SIZES
+from lossy.engine.params import SR
 
 
 def spectral_process(input_audio, params):
@@ -37,7 +37,6 @@ def spectral_process(input_audio, params):
     """
     g = float(params.get("global_amount", 1.0))
     loss = float(params["loss"]) * g
-    speed = float(params["speed"])
     mode = int(params["mode"])
     seed = int(params.get("seed", 42))
     freeze = int(params.get("freeze", 0))
@@ -48,21 +47,30 @@ def spectral_process(input_audio, params):
     pre_echo_amount = float(params.get("pre_echo", 0.0)) * g
     noise_shape = float(params.get("noise_shape", 0.0))
     weighting = float(params.get("weighting", 1.0))
+    hf_threshold = float(params.get("hf_threshold", 0.3))
+    transient_ratio = float(params.get("transient_ratio", 4.0))
+    slushy_rate_param = float(params.get("slushy_rate", 0.03))
 
     if loss <= 0.0 and freeze == 0 and phase_loss <= 0.0:
         return input_audio.copy()
 
-    # --- Map speed to window size ---
-    idx = min(int(speed * len(WINDOW_SIZES)), len(WINDOW_SIZES) - 1)
-    window_size = WINDOW_SIZES[idx]
-    hop_size = window_size // 4  # 75 % overlap
+    # --- Window and hop from params ---
+    window_size = max(2, int(params.get("window_size", 2048)))
+    hop_divisor = max(1, int(params.get("hop_divisor", 4)))
+    hop_size = max(1, window_size // hop_divisor)
     n_bins = window_size // 2 + 1
+    n_bands = max(2, int(params.get("n_bands", 21)))
 
     window = np.hanning(window_size).astype(np.float64)
 
-    # Pad input so edges are handled cleanly
+    # Pad input so edges are handled cleanly.
+    # Use edge reflection instead of zeros so STFT frames near boundaries
+    # see realistic signal content (avoids fade-in/fade-out artifacts).
     pad = window_size
-    padded = np.concatenate([np.zeros(pad), input_audio, np.zeros(pad)])
+    if len(input_audio) > pad:
+        padded = np.pad(input_audio, pad, mode='reflect')
+    else:
+        padded = np.concatenate([np.zeros(pad), input_audio, np.zeros(pad)])
     n_samples = len(padded)
 
     output = np.zeros(n_samples, dtype=np.float64)
@@ -71,8 +79,7 @@ def spectral_process(input_audio, params):
     n_frames = (n_samples - window_size) // hop_size + 1
     rng = np.random.RandomState(seed)
 
-    # ~21 Bark-like bands (log-spaced edges), mimicking scalefactor bands
-    n_bands = 21
+    # ~N Bark-like bands (log-spaced edges), mimicking scalefactor bands
     band_edges = np.unique(
         np.clip(
             np.logspace(np.log10(1), np.log10(n_bins), n_bands + 1).astype(int),
@@ -96,7 +103,7 @@ def spectral_process(input_audio, params):
         transient_flags = np.zeros(n_frames, dtype=np.bool_)
         for fi in range(1, n_frames):
             if energies[fi - 1] > 1e-12:
-                if energies[fi] / energies[fi - 1] > 4.0:
+                if energies[fi] / energies[fi - 1] > transient_ratio:
                     transient_flags[fi] = True
 
     frozen_spectrum = None
@@ -142,10 +149,11 @@ def spectral_process(input_audio, params):
             proc_phase = phases + noise
 
         # ---------- bandwidth limiting (like low-bitrate MP3) ----------
-        if frame_loss > 0.3:
+        if frame_loss > hf_threshold:
             cutoff = int(n_bins * (1.0 - 0.6 * frame_loss))
             cutoff = max(cutoff, n_bins // 8)
-            proc_mag[cutoff:] *= max(0.0, 1.0 - (frame_loss - 0.3) / 0.7)
+            hf_range = 1.0 - hf_threshold if hf_threshold < 1.0 else 1.0
+            proc_mag[cutoff:] *= max(0.0, 1.0 - (frame_loss - hf_threshold) / hf_range)
 
         # ---------- freeze ----------
         if freeze:
@@ -154,8 +162,7 @@ def spectral_process(input_audio, params):
             if freeze_mode == 1:  # solid
                 frozen_out = frozen_spectrum.copy()
             else:  # slushy
-                rate = 0.005 + 0.15 * speed
-                frozen_spectrum = (1.0 - rate) * frozen_spectrum + rate * proc_mag
+                frozen_spectrum = (1.0 - slushy_rate_param) * frozen_spectrum + slushy_rate_param * proc_mag
                 frozen_out = frozen_spectrum.copy()
             # Freezer blend: 1.0 = fully frozen, 0.0 = bypass freeze
             proc_mag = freezer_blend * frozen_out + (1.0 - freezer_blend) * proc_mag
@@ -262,7 +269,7 @@ def _standard(magnitudes, loss, rng, band_edges, n_bands,
         # Signal-dependent: low-energy bands more likely to be gated
         relative = min(band_energy[b] / mean_energy, 2.0) / 2.0
         # ATH-weighted: frequencies where hearing is less sensitive
-        # weighting=0 → equal (0.75), weighting=1 → full psychoacoustic ATH
+        # weighting=0 -> equal (0.75), weighting=1 -> full psychoacoustic ATH
         ath_factor = (1.0 - weighting) * 0.75 + weighting * (0.5 + 0.5 * ath_weights[b])
         # Combined gating probability
         gate_prob = loss * 0.6 * (1.0 - relative) * ath_factor

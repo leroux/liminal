@@ -5,7 +5,7 @@ All sample-level loops use Numba for speed.
 
 import numpy as np
 from numba import njit
-from engine.params import SR, SLOPE_SECTIONS, SLOPE_OPTIONS
+from lossy.engine.params import SR, SLOPE_SECTIONS, SLOPE_OPTIONS
 
 
 # ---------------------------------------------------------------------------

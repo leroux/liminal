@@ -14,11 +14,11 @@ All callers -- GUI, CLI, presets -- use render_lossy().
 """
 
 import numpy as np
-from engine.spectral import spectral_process
-from engine.bitcrush import crush_and_decimate
-from engine.packets import packet_process
-from engine.filters import apply_filter, lofi_reverb, noise_gate, limiter
-from engine.params import BOUNCE_TARGETS, PARAM_RANGES
+from lossy.engine.spectral import spectral_process
+from lossy.engine.bitcrush import crush_and_decimate
+from lossy.engine.packets import packet_process
+from lossy.engine.filters import apply_filter, lofi_reverb, noise_gate, limiter
+from lossy.engine.params import BOUNCE_TARGETS, PARAM_RANGES
 
 
 def _render_chain(dry, params):
@@ -88,26 +88,52 @@ def _render_mono(dry, params):
     return dry * (1.0 - mix) + wet * mix
 
 
-def render_lossy(input_audio, params):
+def render_lossy(input_audio, params, chunk_callback=None, chunk_size=16384):
     """The single entry point.  GUI sliders, CLI, and batch rendering all
     call this same function.
 
     Args:
         input_audio: float64 array — mono (samples,) or stereo (samples, 2)
         params: parameter dict (see engine/params.py)
+        chunk_callback: if provided, called with each rendered chunk.
+            Return True to continue, False to stop early.
+        chunk_size: samples per chunk when streaming (default 16384 ~ 370ms)
 
     Returns:
         processed float64 array, same shape as input
     """
     dry = input_audio.astype(np.float64)
 
-    if dry.ndim == 2:
-        channels = []
-        for ch in range(dry.shape[1]):
-            channels.append(_render_mono(dry[:, ch], params))
-        return np.column_stack(channels)
+    if chunk_callback is None:
+        # Full-buffer render (original path)
+        if dry.ndim == 2:
+            channels = []
+            for ch in range(dry.shape[1]):
+                channels.append(_render_mono(dry[:, ch], params))
+            return np.column_stack(channels)
+        return _render_mono(dry, params)
 
-    return _render_mono(dry, params)
+    # Streaming: process in chunks, fire callback after each
+    n = dry.shape[0]
+    if dry.ndim == 2:
+        output = np.zeros_like(dry)
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            chunk_channels = []
+            for ch in range(dry.shape[1]):
+                chunk_channels.append(_render_mono(dry[start:end, ch], params))
+            output[start:end] = np.column_stack(chunk_channels)
+            if not chunk_callback(output[start:end]):
+                break
+    else:
+        output = np.zeros(n, dtype=np.float64)
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            output[start:end] = _render_mono(dry[start:end], params)
+            if not chunk_callback(output[start:end]):
+                break
+
+    return output
 
 
 def _render_with_bounce(dry, params):
@@ -115,8 +141,10 @@ def _render_with_bounce(dry, params):
     bounce_target_idx = int(params.get("bounce_target", 0))
     bounce_rate_param = float(params.get("bounce_rate", 0.3))
 
-    # Map bounce_rate 0-1 to Hz 0.1-5.0
-    lfo_hz = 0.1 + 4.9 * bounce_rate_param
+    # Map bounce_rate 0-1 to Hz range from params
+    lfo_min = float(params.get("bounce_lfo_min", 0.1))
+    lfo_max = float(params.get("bounce_lfo_max", 5.0))
+    lfo_hz = lfo_min + (lfo_max - lfo_min) * bounce_rate_param
 
     if bounce_target_idx >= len(BOUNCE_TARGETS):
         bounce_target_idx = 0
@@ -127,7 +155,7 @@ def _render_with_bounce(dry, params):
     lo, hi = PARAM_RANGES.get(target_key, (0.0, 1.0))
 
     # Block size ~50ms
-    from engine.params import SR
+    from lossy.engine.params import SR
     block_samples = int(SR * 0.05)
     n = len(dry)
     wet = np.zeros(n, dtype=np.float64)

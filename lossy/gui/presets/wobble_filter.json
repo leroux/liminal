@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.35,
-  "speed": 0.3,
+  "window_size": 2048,
   "filter_type": 1,
   "filter_freq": 3000.0,
   "filter_width": 0.4,

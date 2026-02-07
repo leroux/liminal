@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.55,
-  "speed": 0.4,
+  "window_size": 1024,
   "phase_loss": 0.7,
   "quantizer": 1,
   "filter_type": 1,
@@ -13,6 +13,6 @@
   "wet_dry": 1.0,
   "_meta": {
     "category": "Sound Design",
-    "description": "Phase quantization + compand quantizer + bandpass — synthetic vocal shimmer"
+    "description": "Phase quantization + compand quantizer + bandpass \u2014 synthetic vocal shimmer"
   }
 }

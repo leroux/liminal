@@ -19,7 +19,7 @@ import numpy as np
 N = 8  # number of delay lines
 
 
-def _render_mono(input_audio, params):
+def _render_mono(input_audio, params, chunk_callback=None, chunk_size=4096):
     """Route a mono channel to the appropriate engine."""
     has_mod = (
         params.get("mod_master_rate", 0.0) > 0.0 and (
@@ -31,14 +31,15 @@ def _render_mono(input_audio, params):
     )
 
     if has_mod:
-        from engine.numba_fdn_mod import render_fdn_mod
-        return render_fdn_mod(input_audio, params)
+        from reverb.engine.numba_fdn_mod import render_fdn_mod
+        return render_fdn_mod(input_audio, params, chunk_callback, chunk_size)
     else:
-        from engine.numba_fdn import render_fdn_fast
-        return render_fdn_fast(input_audio, params)
+        from reverb.engine.numba_fdn import render_fdn_fast
+        return render_fdn_fast(input_audio, params, chunk_callback, chunk_size)
 
 
-def render_fdn(input_audio: np.ndarray, params: dict) -> np.ndarray:
+def render_fdn(input_audio: np.ndarray, params: dict,
+               chunk_callback=None, chunk_size=4096) -> np.ndarray:
     """The single entry point. GUI sliders, ML optimizers, and batch
     rendering all call this same function.
 
@@ -48,14 +49,20 @@ def render_fdn(input_audio: np.ndarray, params: dict) -> np.ndarray:
     Args:
         input_audio: float64 array — mono (samples,) or stereo (samples, 2)
         params: parameter dict (see engine/params.py)
+        chunk_callback: if provided, called with each rendered chunk (np array).
+            Return True to continue, False to stop early.
+        chunk_size: samples per chunk when streaming (default 4096 ~ 93ms)
 
     Returns:
         stereo output (samples, 2)
     """
     if input_audio.ndim == 2:
-        # FDN internally mixes dry mono into both channels, so for stereo
-        # input we process each channel at 100% wet, sum the reverb tails,
-        # then apply wet/dry mix with the original stereo dry signal.
+        if chunk_callback is not None:
+            # For streaming: mix stereo to mono so we can stream a single pass
+            mono = input_audio.mean(axis=1)
+            return _render_mono(mono, params, chunk_callback, chunk_size)
+
+        # Full stereo processing (no streaming)
         wet_params = dict(params)
         wet_params["wet_dry"] = 1.0
         n = input_audio.shape[0]
@@ -69,4 +76,4 @@ def render_fdn(input_audio: np.ndarray, params: dict) -> np.ndarray:
                                else input_audio[:, 0]])
         return dry * (1.0 - mix) + wet * mix
 
-    return _render_mono(input_audio, params)
+    return _render_mono(input_audio, params, chunk_callback, chunk_size)

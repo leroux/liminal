@@ -95,6 +95,7 @@ def _process_block_mod(
     mod_depth_matrix, mod_rate_matrix,
     mod_waveform, mod_phases,
     sample_rate,
+    sample_offset,
 ):
     n_samples = len(input_audio)
     pd_wi = pre_delay_write_idx[0]
@@ -123,7 +124,7 @@ def _process_block_mod(
         lfo_delay = np.empty(N)
         lfo_damping = np.empty(N)
         lfo_output = np.empty(N)
-        t = n / sample_rate
+        t = (sample_offset + n) / sample_rate
 
         for i in range(N):
             # Delay modulation LFO
@@ -219,10 +220,11 @@ def _process_block_mod(
 # Setup + Entry Point
 # ---------------------------------------------------------------------------
 
-def render_fdn_mod(input_audio: np.ndarray, params: dict) -> np.ndarray:
+def render_fdn_mod(input_audio: np.ndarray, params: dict,
+                   chunk_callback=None, chunk_size=4096) -> np.ndarray:
     """Modulated FDN rendering — drop-in replacement when modulation is active."""
-    from primitives.matrix import get_matrix, MATRIX_TYPES
-    from engine.params import SR as sample_rate
+    from reverb.primitives.matrix import get_matrix, MATRIX_TYPES
+    from reverb.engine.params import SR as sample_rate
 
     n_samples = len(input_audio)
 
@@ -324,25 +326,37 @@ def render_fdn_mod(input_audio: np.ndarray, params: dict) -> np.ndarray:
     base_phases = np.array([i / N for i in range(N)], dtype=np.float64)
     mod_phases = base_phases * (1.0 - correlation)
 
+    input_f64 = input_audio.astype(np.float64)
     output = np.empty((n_samples, 2), dtype=np.float64)
 
-    _process_block_mod(
-        input_audio.astype(np.float64), output,
-        pre_delay_buf, pre_delay_len, pre_delay_samples, pre_delay_write_idx,
-        diff_bufs, diff_lens, diff_gains, diff_idxs, n_diff_stages,
-        delay_bufs, delay_buf_len, delay_times_base, delay_write_idxs,
-        damping_coeffs_base, damping_y1,
-        matrix, matrix2,
-        feedback_gain, input_gains, output_gains_base, wet_dry,
-        saturation,
-        dc_x1, dc_y1, dc_R,
-        pan_gain_L, pan_gain_R,
-        mod_depth_delay, mod_rate_delay,
-        mod_depth_damping, mod_rate_damping,
-        mod_depth_output, mod_rate_output,
-        mod_depth_matrix, mod_rate_matrix,
-        mod_waveform, mod_phases,
-        float(sample_rate),
-    )
+    def _call_block(inp, out, s_offset):
+        _process_block_mod(
+            inp, out,
+            pre_delay_buf, pre_delay_len, pre_delay_samples, pre_delay_write_idx,
+            diff_bufs, diff_lens, diff_gains, diff_idxs, n_diff_stages,
+            delay_bufs, delay_buf_len, delay_times_base, delay_write_idxs,
+            damping_coeffs_base, damping_y1,
+            matrix, matrix2,
+            feedback_gain, input_gains, output_gains_base, wet_dry,
+            saturation,
+            dc_x1, dc_y1, dc_R,
+            pan_gain_L, pan_gain_R,
+            mod_depth_delay, mod_rate_delay,
+            mod_depth_damping, mod_rate_damping,
+            mod_depth_output, mod_rate_output,
+            mod_depth_matrix, mod_rate_matrix,
+            mod_waveform, mod_phases,
+            float(sample_rate),
+            s_offset,
+        )
+
+    if chunk_callback is None:
+        _call_block(input_f64, output, 0)
+    else:
+        for start in range(0, n_samples, chunk_size):
+            end = min(start + chunk_size, n_samples)
+            _call_block(input_f64[start:end], output[start:end], start)
+            if not chunk_callback(output[start:end]):
+                break
 
     return output

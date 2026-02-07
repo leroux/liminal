@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.6,
-  "speed": 0.25,
+  "window_size": 2048,
   "quantizer": 1,
   "threshold": 0.05,
   "auto_gain": 1.0,

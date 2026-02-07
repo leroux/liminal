@@ -1,7 +1,7 @@
 {
   "mode": 1,
   "loss": 0.55,
-  "speed": 0.0,
+  "window_size": 4096,
   "verb": 0.9,
   "decay": 0.9,
   "verb_position": 1,
