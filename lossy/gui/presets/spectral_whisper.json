@@ -1,7 +1,7 @@
 {
   "mode": 1,
   "loss": 0.8,
-  "speed": 0.05,
+  "window_size": 4096,
   "gate": 0.25,
   "loss_gain": 0.7,
   "auto_gain": 0.6,
@@ -9,6 +9,6 @@
   "wet_dry": 1.0,
   "_meta": {
     "category": "Sound Design",
-    "description": "Inverse mode + gate — breathy ghost of the original, barely there"
+    "description": "Inverse mode + gate \u2014 breathy ghost of the original, barely there"
   }
 }

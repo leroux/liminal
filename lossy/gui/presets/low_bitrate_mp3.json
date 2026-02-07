@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.65,
-  "speed": 0.25,
+  "window_size": 2048,
   "global_amount": 1.0,
   "packets": 0,
   "packet_rate": 0.0,

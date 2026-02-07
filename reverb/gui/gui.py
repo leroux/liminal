@@ -14,11 +14,15 @@ import json
 import os
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from engine.fdn import render_fdn
-from engine.params import default_params, SR
-from primitives.matrix import MATRIX_TYPES, get_matrix, nearest_unitary, is_unitary
+from reverb.engine.fdn import render_fdn
+from reverb.engine.params import default_params, PARAM_RANGES, SR
+from reverb.primitives.matrix import MATRIX_TYPES, get_matrix, nearest_unitary, is_unitary
+from shared.llm_guide_text import REVERB_GUIDE, REVERB_PARAM_DESCRIPTIONS
+from shared.llm_tuner import LLMTuner
+from shared.streaming import safety_check, normalize_output
 
 PRESET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets")
 TEST_SIGNALS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -52,6 +56,14 @@ class ReverbGUI:
             self._load_wav(default_source)
 
         self._build_ui()
+
+        self.llm = LLMTuner(
+            guide_text=REVERB_GUIDE,
+            param_descriptions=REVERB_PARAM_DESCRIPTIONS,
+            param_ranges=PARAM_RANGES,
+            default_params_fn=default_params,
+            root=self.root,
+        )
 
     def _build_ui(self):
         self.root.configure(padx=10, pady=10)
@@ -113,9 +125,12 @@ class ReverbGUI:
             pass
 
     def _build_params_page(self, parent):
-        # Scrollable wrapper for the entire params page
-        scroll_canvas = tk.Canvas(parent, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=scroll_canvas.yview)
+        # Scrollable wrapper in a container so AI prompt sits below
+        scroll_container = ttk.Frame(parent)
+        scroll_container.pack(side="top", fill="both", expand=True)
+
+        scroll_canvas = tk.Canvas(scroll_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=scroll_canvas.yview)
         scroll_canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         scroll_canvas.pack(side="left", fill="both", expand=True)
@@ -142,9 +157,11 @@ class ReverbGUI:
         self._params_scroll_canvas = scroll_canvas
 
         # Two-column layout: left = global/matrix/XY, right = per-node sliders
-        left = ttk.Frame(inner, padding=5)
+        columns = ttk.Frame(inner)
+        columns.pack(side="top", fill="both", expand=True)
+        left = ttk.Frame(columns, padding=5)
         left.pack(side="left", fill="both", expand=True, anchor="n")
-        right = ttk.Frame(inner, padding=5)
+        right = ttk.Frame(columns, padding=5)
         right.pack(side="left", fill="both", expand=True, anchor="n")
 
         # ============ LEFT COLUMN ============
@@ -362,6 +379,92 @@ class ReverbGUI:
         self.matrix_var.trace_add("write", lambda *_: self._schedule_autoplay())
         self.mod_waveform_var.trace_add("write", lambda *_: self._schedule_autoplay())
 
+        # ============ AI TUNER (below scrollable params) ============
+        self._build_ai_prompt(parent)
+
+    def _build_ai_prompt(self, parent):
+        """Build the AI tuner widget group at the bottom of the params page."""
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(10, 5))
+        ttk.Label(parent, text="AI Tuner", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=5)
+
+        input_frame = ttk.Frame(parent)
+        input_frame.pack(fill="x", padx=5, pady=(2, 0))
+
+        self.ai_input = tk.Text(input_frame, height=2, wrap="word",
+                                bg="#2a2a3e", fg="#eeeeee", insertbackground="#eeeeee",
+                                font=("Helvetica", 11), relief="solid", bd=1)
+        self.ai_input.pack(fill="x", side="top")
+        self.ai_input.bind("<Shift-Return>", lambda e: (self._on_ask_claude(), "break"))
+
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill="x", padx=5, pady=(3, 0))
+        self.ai_ask_btn = ttk.Button(btn_frame, text="Ask Claude", command=self._on_ask_claude)
+        self.ai_ask_btn.pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Undo", command=self._on_ai_undo).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="New Session", command=self._on_ai_new_session).pack(side="left", padx=2)
+        ttk.Label(btn_frame, text="Shift+Enter to send", foreground="#666688",
+                  font=("Helvetica", 9)).pack(side="left", padx=8)
+        self.ai_status_var = tk.StringVar(value="")
+        ttk.Label(btn_frame, textvariable=self.ai_status_var).pack(side="left", padx=4)
+
+        self.ai_response = tk.Text(parent, height=8, wrap="word", state="disabled",
+                                   bg="#222233", fg="#dddddd", font=("Helvetica", 10),
+                                   relief="solid", bd=1)
+        self.ai_response.pack(fill="x", padx=5, pady=(3, 8))
+
+    def _on_ask_claude(self):
+        prompt = self.ai_input.get("1.0", "end-1c").strip()
+        if not prompt:
+            return
+        self.ai_status_var.set("Thinking...")
+        self.ai_ask_btn.configure(state="disabled")
+        # Show user message in response box
+        self.ai_response.configure(state="normal")
+        self.ai_response.insert("end", f"\n> {prompt}\n\n")
+        self.ai_response.configure(state="disabled")
+        self.ai_input.delete("1.0", "end")
+        current = self._read_params_from_ui()
+        self.llm.send_prompt(
+            prompt, current,
+            on_text=self._on_claude_text,
+            on_params=self._on_claude_params,
+            on_done=self._on_claude_done,
+            on_error=self._on_claude_error,
+        )
+
+    def _on_claude_text(self, text):
+        self.ai_response.configure(state="normal")
+        self.ai_response.insert("end", text)
+        self.ai_response.see("end")
+        self.ai_response.configure(state="disabled")
+        self.ai_status_var.set("")
+
+    def _on_claude_params(self, merged_params):
+        self._write_params_to_ui(merged_params)
+        self.ai_status_var.set("Applied params")
+        self._on_play()
+
+    def _on_claude_done(self):
+        self.ai_ask_btn.configure(state="normal")
+
+    def _on_claude_error(self, error_msg):
+        self.ai_status_var.set(f"Error: {error_msg[:80]}")
+        self.ai_ask_btn.configure(state="normal")
+
+    def _on_ai_undo(self):
+        prev = self.llm.undo()
+        if prev:
+            self._write_params_to_ui(prev)
+            self.ai_status_var.set("Reverted")
+            self._on_play()
+
+    def _on_ai_new_session(self):
+        self.llm.reset_session()
+        self.ai_response.configure(state="normal")
+        self.ai_response.delete("1.0", "end")
+        self.ai_response.configure(state="disabled")
+        self.ai_status_var.set("New session")
+
     def _build_presets_page(self, parent):
         # Treeview grouped by category
         tree_frame = ttk.Frame(parent)
@@ -381,6 +484,7 @@ class ReverbGUI:
         self.preset_tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
         self.preset_tree.bind("<Double-1>", lambda e: self._on_load_preset(play=True))
+        self.preset_tree.bind("<Return>", lambda e: self._on_load_preset(play=True))
 
         self._preset_meta = {}  # name -> {category, description}
         self._refresh_preset_list()
@@ -1195,16 +1299,43 @@ class ReverbGUI:
     def _bind_scroll(self, widget, var, from_, to_):
         self._scroll_widgets[str(widget)] = (var, from_, to_)
 
+    @staticmethod
+    def _fmt_val(val, fmt=".2f"):
+        return f"{val:{fmt}}"
+
     def _add_slider(self, parent, row, key, label, from_, to_, value, length=350):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=1)
         var = tk.DoubleVar(value=value)
-        scale = ttk.Scale(parent, from_=from_, to=to_, variable=var,
+        # Frame holding [min_label | scale | max_label]
+        slider_frame = ttk.Frame(parent)
+        slider_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=1)
+        min_text = self._fmt_val(from_)
+        max_text = self._fmt_val(to_)
+        ttk.Label(slider_frame, text=min_text, width=len(min_text)+1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
+        scale = ttk.Scale(slider_frame, from_=from_, to=to_, variable=var,
                           orient="horizontal", length=length)
-        scale.grid(row=row, column=1, sticky="ew", padx=5, pady=1)
+        scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(slider_frame, text=max_text, width=len(max_text)+1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
         self._bind_scroll(scale, var, from_, to_)
-        val_label = ttk.Label(parent, text=f"{value:.2f}", width=7)
-        val_label.grid(row=row, column=2, sticky="w", pady=1)
-        var.trace_add("write", lambda *a, v=var, l=val_label: l.config(text=f"{v.get():.2f}"))
+        # Typeable entry field
+        entry_var = tk.StringVar(value=f"{value:.2f}")
+        entry = ttk.Entry(parent, textvariable=entry_var, width=7, justify="right")
+        entry.grid(row=row, column=2, sticky="w", pady=1)
+        def _on_slider_change(*_a, v=var, ev=entry_var):
+            ev.set(f"{v.get():.2f}")
+        var.trace_add("write", _on_slider_change)
+        def _on_entry_return(event, v=var, ev=entry_var, _lo=from_, _hi=to_):
+            try:
+                val = float(ev.get())
+                val = max(_lo, min(_hi, val))
+                v.set(val)
+                self._schedule_autoplay()
+            except ValueError:
+                ev.set(f"{v.get():.2f}")
+        entry.bind("<Return>", _on_entry_return)
+        entry.bind("<FocusOut>", _on_entry_return)
         self.sliders[key] = var
         lock_var = tk.BooleanVar(value=False)
         self.locks[key] = lock_var
@@ -1216,13 +1347,36 @@ class ReverbGUI:
     def _add_node_slider(self, parent, row, key, label, from_, to_, value, var_list, fmt=".2f", length=350):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=0)
         var = tk.DoubleVar(value=value)
-        scale = ttk.Scale(parent, from_=from_, to=to_, variable=var,
+        # Frame holding [min_label | scale | max_label]
+        slider_frame = ttk.Frame(parent)
+        slider_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=0)
+        min_text = self._fmt_val(from_, fmt)
+        max_text = self._fmt_val(to_, fmt)
+        ttk.Label(slider_frame, text=min_text, width=len(min_text)+1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
+        scale = ttk.Scale(slider_frame, from_=from_, to=to_, variable=var,
                           orient="horizontal", length=length)
-        scale.grid(row=row, column=1, sticky="ew", padx=5, pady=0)
+        scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(slider_frame, text=max_text, width=len(max_text)+1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
         self._bind_scroll(scale, var, from_, to_)
-        val_label = ttk.Label(parent, text=f"{value:{fmt}}", width=7)
-        val_label.grid(row=row, column=2, sticky="w", pady=0)
-        var.trace_add("write", lambda *a, v=var, l=val_label, f=fmt: l.config(text=f"{v.get():{f}}"))
+        # Typeable entry field
+        entry_var = tk.StringVar(value=f"{value:{fmt}}")
+        entry = ttk.Entry(parent, textvariable=entry_var, width=7, justify="right")
+        entry.grid(row=row, column=2, sticky="w", pady=0)
+        def _on_slider_change(*_a, v=var, ev=entry_var, f=fmt):
+            ev.set(f"{v.get():{f}}")
+        var.trace_add("write", _on_slider_change)
+        def _on_entry_return(event, v=var, ev=entry_var, _lo=from_, _hi=to_, f=fmt):
+            try:
+                val = float(ev.get())
+                val = max(_lo, min(_hi, val))
+                v.set(val)
+                self._schedule_autoplay()
+            except ValueError:
+                ev.set(f"{v.get():{f}}")
+        entry.bind("<Return>", _on_entry_return)
+        entry.bind("<FocusOut>", _on_entry_return)
         var_list.append(var)
         lock_var = tk.BooleanVar(value=False)
         self.locks[key] = lock_var
@@ -1595,6 +1749,8 @@ class ReverbGUI:
     # ------------------------------------------------------------------
 
     def _load_wav(self, path):
+        from scipy.signal import resample_poly
+        from math import gcd
         sr, data = wavfile.read(path)
         if data.dtype == np.int16:
             audio = data.astype(np.float64) / 32768.0
@@ -1602,6 +1758,9 @@ class ReverbGUI:
             audio = data.astype(np.float64) / 2147483648.0
         else:
             audio = data.astype(np.float64)
+        if sr != SR:
+            g = gcd(SR, sr)
+            audio = resample_poly(audio, SR // g, sr // g, axis=0)
         # Keep stereo as (samples, 2) — don't downmix
         self.source_audio = audio
         self.source_path = path
@@ -1632,56 +1791,45 @@ class ReverbGUI:
     def _params_snapshot(self, params):
         return json.dumps(params, sort_keys=True)
 
-    def _render(self, params, callback):
+    def _render_and_play(self, params):
+        """Render full buffer in background, then play with sd.play()."""
+        if self._autoplay_id is not None:
+            self.root.after_cancel(self._autoplay_id)
+            self._autoplay_id = None
         self.rendering = True
         self.status_var.set("Rendering...")
-        self.root.update()
 
         def do_render():
-            tail_len = int(self.sliders["tail_length"].get() * SR)
-            if self.source_audio.ndim == 2:
-                tail = np.zeros((tail_len, self.source_audio.shape[1]))
-            else:
-                tail = np.zeros(tail_len)
-            audio_in = np.concatenate([self.source_audio, tail])
-            output = render_fdn(audio_in, params)
+            try:
+                tail_len = int(self.sliders["tail_length"].get() * SR)
+                if self.source_audio.ndim == 2:
+                    tail = np.zeros((tail_len, self.source_audio.shape[1]))
+                else:
+                    tail = np.zeros(tail_len)
+                audio_in = np.concatenate([self.source_audio, tail])
 
-            # --- Safety: reject unstable output ---
-            if not np.all(np.isfinite(output)):
-                self.rendering = False
+                output = render_fdn(audio_in, params)
+
+                ok, err = safety_check(output)
+                if not ok:
+                    self.root.after(0, lambda: self.status_var.set(err))
+                    return
+
+                output, loud_warning = normalize_output(output)
+
+                self.rendered_audio = output
+                self.rendered_warning = loud_warning
+                self.rendered_params = self._params_snapshot(params)
+                dur = len(output) / SR
                 self.root.after(0, lambda: (
-                    sd.stop(),
-                    self.status_var.set(
-                        "ERROR: output diverged (non-finite values). Adjust params.")))
-                return
-            peak = np.max(np.abs(output))
-            if peak > 1e6:
+                    self._play_audio(np.clip(output, -1.0, 1.0).astype(np.float32)),
+                    self.status_var.set(f"Playing ({dur:.1f}s){loud_warning}"),
+                    self._draw_waveform()))
+                self.root.after(50, self._check_autoplay)
+            except Exception as exc:
+                self.root.after(0, lambda: self.status_var.set(f"ERROR: {exc}"))
+            finally:
                 self.rendering = False
-                self.root.after(0, lambda p=peak: (
-                    sd.stop(),
-                    self.status_var.set(
-                        f"ERROR: output exploded (peak={p:.0e}). Reduce feedback/gain.")))
-                return
-
-            # --- Loudness limiter ---
-            if peak > 0:
-                output = output / peak
-            rms = np.sqrt(np.mean(output ** 2))  # works for both mono and stereo
-            target_rms = 0.2
-            if rms > target_rms:
-                gain = target_rms / rms
-                output *= gain
-                loud_warning = f" (loud — reduced {1/gain:.0f}x)"
-            else:
-                loud_warning = ""
-            output *= 0.9  # headroom
-
-            self.rendered_audio = output
-            self.rendered_warning = loud_warning
-            self.rendered_params = self._params_snapshot(params)
-            self.rendering = False
-            self.root.after(0, lambda: callback(output, loud_warning))
-            self.root.after(50, self._check_autoplay)
 
         threading.Thread(target=do_render, daemon=True).start()
 
@@ -1695,6 +1843,8 @@ class ReverbGUI:
             messagebox.showwarning("No source", "Load a WAV file first.")
             return
         if self.rendering:
+            # Already rendering — don't interrupt, _check_autoplay will
+            # re-render with new params after this one finishes
             return
 
         # Always stop previous playback immediately
@@ -1709,12 +1859,7 @@ class ReverbGUI:
             self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
             return
 
-        def on_done(output, loud_warning=""):
-            self._play_audio(np.clip(output, -1.0, 1.0).astype(np.float32))
-            self.status_var.set(f"Playing ({len(output)/SR:.1f}s){loud_warning}")
-            self._draw_waveform()
-
-        self._render(params, on_done)
+        self._render_and_play(params)
 
     def _on_play_dry(self):
         if self.source_audio is None:
@@ -1725,6 +1870,9 @@ class ReverbGUI:
         self.status_var.set("Playing dry...")
 
     def _on_stop(self):
+        if self._autoplay_id is not None:
+            self.root.after_cancel(self._autoplay_id)
+            self._autoplay_id = None
         sd.stop()
         self.status_var.set("Stopped")
 

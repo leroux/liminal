@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.45,
-  "speed": 0.3,
+  "window_size": 2048,
   "threshold": 0.1,
   "auto_gain": 0.8,
   "filter_type": 1,

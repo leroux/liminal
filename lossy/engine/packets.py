@@ -10,7 +10,7 @@ Short Hann crossfades at packet boundaries prevent clicks.
 """
 
 import numpy as np
-from engine.params import SR
+from lossy.engine.params import SR
 
 
 # Crossfade length at packet boundaries (samples).  ~3 ms at 44.1 kHz.

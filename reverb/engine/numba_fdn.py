@@ -102,9 +102,10 @@ def _process_block(
     pre_delay_write_idx[0] = pd_wi
 
 
-def render_fdn_fast(input_audio: np.ndarray, params: dict) -> np.ndarray:
+def render_fdn_fast(input_audio: np.ndarray, params: dict,
+                    chunk_callback=None, chunk_size=4096) -> np.ndarray:
     """Drop-in replacement for engine.fdn.render_fdn, but Numba-accelerated."""
-    from primitives.matrix import build_matrix_apply, get_matrix, MATRIX_TYPES
+    from reverb.primitives.matrix import build_matrix_apply, get_matrix, MATRIX_TYPES
 
     n_samples = len(input_audio)
 
@@ -153,7 +154,7 @@ def render_fdn_fast(input_audio: np.ndarray, params: dict) -> np.ndarray:
 
     # --- DC blocker state ---
     # One-pole high-pass at ~5 Hz: R = 1 - 2*pi*fc/SR
-    from engine.params import SR as sample_rate
+    from reverb.engine.params import SR as sample_rate
     dc_R = 1.0 - 2.0 * np.pi * 5.0 / sample_rate
     dc_x1 = np.zeros(N)
     dc_y1 = np.zeros(N)
@@ -171,19 +172,30 @@ def render_fdn_fast(input_audio: np.ndarray, params: dict) -> np.ndarray:
         pan_gain_L[i] = np.cos(angle)
         pan_gain_R[i] = np.sin(angle)
 
+    input_f64 = input_audio.astype(np.float64)
     output = np.empty((n_samples, 2), dtype=np.float64)
 
-    _process_block(
-        input_audio.astype(np.float64), output,
-        pre_delay_buf, pre_delay_len, pre_delay_samples, pre_delay_write_idx,
-        diff_bufs, diff_lens, diff_gains, diff_idxs, n_diff_stages,
-        delay_bufs, delay_buf_len, delay_times, delay_write_idxs,
-        damping_coeffs, damping_y1,
-        matrix,
-        feedback_gain, input_gains, output_gains, wet_dry,
-        saturation,
-        dc_x1, dc_y1, dc_R,
-        pan_gain_L, pan_gain_R,
-    )
+    def _call_block(inp, out):
+        _process_block(
+            inp, out,
+            pre_delay_buf, pre_delay_len, pre_delay_samples, pre_delay_write_idx,
+            diff_bufs, diff_lens, diff_gains, diff_idxs, n_diff_stages,
+            delay_bufs, delay_buf_len, delay_times, delay_write_idxs,
+            damping_coeffs, damping_y1,
+            matrix,
+            feedback_gain, input_gains, output_gains, wet_dry,
+            saturation,
+            dc_x1, dc_y1, dc_R,
+            pan_gain_L, pan_gain_R,
+        )
+
+    if chunk_callback is None:
+        _call_block(input_f64, output)
+    else:
+        for start in range(0, n_samples, chunk_size):
+            end = min(start + chunk_size, n_samples)
+            _call_block(input_f64[start:end], output[start:end])
+            if not chunk_callback(output[start:end]):
+                break
 
     return output

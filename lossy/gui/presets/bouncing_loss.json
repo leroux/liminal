@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.75,
-  "speed": 0.15,
+  "window_size": 4096,
   "bounce": 1,
   "bounce_target": 0,
   "bounce_rate": 0.25,

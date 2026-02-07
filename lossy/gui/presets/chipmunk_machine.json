@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "loss": 0.4,
-  "speed": 1.0,
+  "window_size": 256,
   "crush": 0.2,
   "decimate": 0.6,
   "noise_shape": 0.5,
@@ -11,6 +11,6 @@
   "wet_dry": 1.0,
   "_meta": {
     "category": "Sound Design",
-    "description": "Fast FFT + heavy decimation — aliased pitch artifacts and digital chatter"
+    "description": "Fast FFT + heavy decimation \u2014 aliased pitch artifacts and digital chatter"
   }
 }

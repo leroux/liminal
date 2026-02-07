@@ -5,8 +5,8 @@ All callers (GUI, CLI, presets) use the same params dict contract.
 
 SR = 44100
 
-# FFT window sizes mapped to speed parameter (0=slow/large to 4=fast/small)
-WINDOW_SIZES = [4096, 2048, 1024, 512, 256]
+# Legacy speed→window_size mapping (for preset backward compat)
+_LEGACY_WINDOW_SIZES = [4096, 2048, 1024, 512, 256]
 
 # Mode names
 MODE_NAMES = ["Standard", "Inverse", "Jitter"]
@@ -31,8 +31,8 @@ FREEZE_NAMES = ["Slushy", "Solid"]
 VERB_POSITION_NAMES = ["Pre", "Post"]
 
 # Bounce target parameter names (subset of params that can be modulated)
-BOUNCE_TARGETS = ["loss", "speed", "crush", "decimate", "verb", "filter_freq", "gate"]
-BOUNCE_TARGET_NAMES = ["Loss", "Speed", "Crush", "Decimate", "Verb", "Filter Freq", "Gate"]
+BOUNCE_TARGETS = ["loss", "window_size", "crush", "decimate", "verb", "filter_freq", "gate"]
+BOUNCE_TARGET_NAMES = ["Loss", "Window", "Crush", "Decimate", "Verb", "Filter Freq", "Gate"]
 
 
 def default_params():
@@ -40,13 +40,18 @@ def default_params():
         # --- Spectral loss ---
         "mode": 0,              # 0=standard, 1=inverse, 2=jitter
         "loss": 0.5,            # 0.0 (clean) to 1.0 (destroyed)
-        "speed": 0.3,           # 0.0 (slow/big window) to 1.0 (fast/small window)
+        "window_size": 2048,    # FFT window size in samples (64-16384)
+        "hop_divisor": 4,       # hop = window_size / hop_divisor (1-8, 4=75% overlap)
+        "n_bands": 21,          # number of Bark-like bands for gating (2-64)
         "global_amount": 1.0,   # master intensity multiplier
         "phase_loss": 0.0,      # phase quantization 0=off to 1=extreme
         "quantizer": 0,         # 0=uniform, 1=compand (power-law codec-style)
         "pre_echo": 0.0,        # pre-echo enhancement 0=off to 1=max
         "noise_shape": 0.0,     # envelope-following quantization noise shaping
         "weighting": 1.0,       # 0=equal freq weighting, 1=psychoacoustic ATH model
+        "hf_threshold": 0.3,    # loss level where HF rolloff begins (0.0-1.0)
+        "transient_ratio": 4.0, # energy ratio threshold for pre-echo detection (1.5-20.0)
+        "slushy_rate": 0.03,    # freeze slushy drift speed (0.001-0.5)
 
         # --- Crush (time-domain degradation) ---
         "crush": 0.0,           # bitcrusher 0=off to 1=extreme
@@ -85,6 +90,8 @@ def default_params():
         "bounce": 0,            # 0=off, 1=on
         "bounce_target": 0,     # index into BOUNCE_TARGETS
         "bounce_rate": 0.3,     # LFO rate 0=slow to 1=fast
+        "bounce_lfo_min": 0.1,  # LFO minimum frequency Hz
+        "bounce_lfo_max": 5.0,  # LFO maximum frequency Hz
 
         # --- Output ---
         "wet_dry": 1.0,         # 0=dry, 1=wet
@@ -97,9 +104,11 @@ def default_params():
 def bypass_params():
     """All params at their no-effect / clean position."""
     return {
-        "mode": 0, "loss": 0.0, "speed": 0.0, "global_amount": 1.0,
+        "mode": 0, "loss": 0.0, "window_size": 2048, "hop_divisor": 4,
+        "n_bands": 21, "global_amount": 1.0,
         "phase_loss": 0.0, "quantizer": 0, "pre_echo": 0.0,
         "noise_shape": 0.0, "weighting": 1.0,
+        "hf_threshold": 0.3, "transient_ratio": 4.0, "slushy_rate": 0.03,
         "crush": 0.0, "decimate": 0.0,
         "packets": 0, "packet_rate": 0.0, "packet_size": 30.0,
         "filter_type": 0, "filter_freq": 1000.0, "filter_width": 0.5,
@@ -109,47 +118,69 @@ def bypass_params():
         "gate": 0.0,
         "threshold": 1.0, "auto_gain": 0.0, "loss_gain": 0.5,
         "bounce": 0, "bounce_target": 0, "bounce_rate": 0.0,
+        "bounce_lfo_min": 0.1, "bounce_lfo_max": 5.0,
         "wet_dry": 1.0,
         "seed": 42,
     }
 
 
+def migrate_legacy_params(params):
+    """Convert legacy preset with 'speed' to 'window_size'."""
+    if "speed" in params and "window_size" not in params:
+        speed = float(params.pop("speed"))
+        sizes = _LEGACY_WINDOW_SIZES
+        idx = min(int(speed * len(sizes)), len(sizes) - 1)
+        params["window_size"] = sizes[idx]
+    elif "speed" in params:
+        params.pop("speed")
+    return params
+
+
 PARAM_RANGES = {
-    "loss":          (0.0, 1.0),
-    "speed":         (0.0, 1.0),
-    "global_amount": (0.0, 1.0),
-    "phase_loss":    (0.0, 1.0),
-    "pre_echo":      (0.0, 1.0),
-    "noise_shape":   (0.0, 1.0),
-    "weighting":     (0.0, 1.0),
-    "crush":         (0.0, 1.0),
-    "decimate":      (0.0, 1.0),
-    "packet_rate":   (0.0, 1.0),
-    "packet_size":   (5.0, 200.0),
-    "filter_freq":   (20.0, 20000.0),
-    "filter_width":  (0.0, 1.0),
-    "verb":          (0.0, 1.0),
-    "decay":         (0.0, 1.0),
-    "freezer":       (0.0, 1.0),
-    "gate":          (0.0, 1.0),
-    "threshold":     (0.0, 1.0),
-    "auto_gain":     (0.0, 1.0),
-    "loss_gain":     (0.0, 1.0),
-    "bounce_rate":   (0.0, 1.0),
-    "wet_dry":       (0.0, 1.0),
+    "loss":            (0.0, 1.0),
+    "window_size":     (64, 16384),
+    "hop_divisor":     (1, 8),
+    "n_bands":         (2, 64),
+    "global_amount":   (0.0, 1.0),
+    "phase_loss":      (0.0, 1.0),
+    "pre_echo":        (0.0, 1.0),
+    "noise_shape":     (0.0, 1.0),
+    "weighting":       (0.0, 1.0),
+    "hf_threshold":    (0.0, 1.0),
+    "transient_ratio": (1.5, 20.0),
+    "slushy_rate":     (0.001, 0.5),
+    "crush":           (0.0, 1.0),
+    "decimate":        (0.0, 1.0),
+    "packet_rate":     (0.0, 1.0),
+    "packet_size":     (5.0, 200.0),
+    "filter_freq":     (20.0, 20000.0),
+    "filter_width":    (0.0, 1.0),
+    "verb":            (0.0, 1.0),
+    "decay":           (0.0, 1.0),
+    "freezer":         (0.0, 1.0),
+    "gate":            (0.0, 1.0),
+    "threshold":       (0.0, 1.0),
+    "auto_gain":       (0.0, 1.0),
+    "loss_gain":       (0.0, 1.0),
+    "bounce_rate":     (0.0, 1.0),
+    "bounce_lfo_min":  (0.01, 50.0),
+    "bounce_lfo_max":  (0.01, 50.0),
+    "wet_dry":         (0.0, 1.0),
 }
 
 # Section groupings for lock feature
 PARAM_SECTIONS = {
-    "spectral": ["mode", "loss", "speed", "global_amount", "phase_loss",
-                  "pre_echo", "noise_shape", "quantizer"],
+    "spectral": ["mode", "loss", "window_size", "hop_divisor", "n_bands",
+                  "global_amount", "phase_loss", "pre_echo", "noise_shape",
+                  "quantizer", "hf_threshold", "transient_ratio", "slushy_rate"],
     "crush": ["crush", "decimate"],
     "packets": ["packets", "packet_rate", "packet_size"],
     "filter": ["filter_type", "filter_freq", "filter_width", "filter_slope"],
     "effects": ["verb", "decay", "verb_position", "gate",
                 "freeze", "freeze_mode", "freezer"],
     "hidden": ["threshold", "auto_gain", "loss_gain", "weighting"],
-    "bounce": ["bounce", "bounce_target", "bounce_rate"],
+    "bounce": ["bounce", "bounce_target", "bounce_rate",
+               "bounce_lfo_min", "bounce_lfo_max"],
     "output": ["wet_dry"],
 }
 

@@ -1,7 +1,7 @@
 {
   "mode": 1,
   "loss": 0.5,
-  "speed": 0.2,
+  "window_size": 2048,
   "filter_type": 1,
   "filter_freq": 800.0,
   "filter_width": 0.2,
@@ -14,6 +14,6 @@
   "wet_dry": 1.0,
   "_meta": {
     "category": "Sound Design",
-    "description": "Inverse mode + resonant bandpass — isolates and amplifies hidden harmonic content"
+    "description": "Inverse mode + resonant bandpass \u2014 isolates and amplifies hidden harmonic content"
   }
 }
