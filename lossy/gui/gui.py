@@ -104,14 +104,7 @@ class LossyGUI:
             from scipy.signal import resample_poly
             from math import gcd
             g = gcd(SR, sr)
-            up, down = SR // g, sr // g
-            if audio.ndim == 2:
-                channels = []
-                for ch in range(audio.shape[1]):
-                    channels.append(resample_poly(audio[:, ch], up, down))
-                audio = np.column_stack(channels)
-            else:
-                audio = resample_poly(audio, up, down)
+            audio = resample_poly(audio, SR // g, sr // g, axis=0)
         # Keep stereo as (samples, 2) — don't downmix
         self.source_audio = audio
 
