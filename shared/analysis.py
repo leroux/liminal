@@ -33,6 +33,10 @@ def analyze(audio, sr=44100, reference=None):
         return {}
 
     result = {}
+    rms = float(np.sqrt(np.mean(mono ** 2)))
+    peak = float(np.max(np.abs(mono)))
+    result["rms_db"] = round(20.0 * np.log10(rms), 1) if rms > 1e-12 else None
+    result["peak_db"] = round(20.0 * np.log10(peak), 1) if peak > 1e-12 else None
     result["rt60"] = _find_rt60(mono, sr)
     result["edt"] = _find_edt(mono, sr)
     result["spectral_centroid"] = _spectral_centroid(mono, sr)

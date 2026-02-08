@@ -228,13 +228,14 @@ AUTONOMOUS TUNING:
             )
 
             # Formatted audio metrics with A/B delta and dedup
-            if metrics is not None:
-                from shared.audio_features import format_features
-                src = source_metrics if not self._source_sent else None
+            from shared.audio_features import format_features
+            src = source_metrics if not self._source_sent else None
+            if metrics is not None or src is not None:
                 features_text = format_features(metrics, self._prev_metrics, src)
                 if features_text:
                     full_prompt += f"\n\n{features_text}"
-                self._prev_metrics = metrics
+                if metrics is not None:
+                    self._prev_metrics = metrics
 
             # Write spectrograms to tmp files so Claude can Read them
             spec_dir = os.path.join(os.getcwd(), ".tmp_spectrograms")
