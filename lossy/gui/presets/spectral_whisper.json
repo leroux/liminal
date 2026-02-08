@@ -1,5 +1,4 @@
 {
-  "mode": 1,
   "loss": 0.8,
   "window_size": 4096,
   "gate": 0.25,
@@ -10,5 +9,6 @@
   "_meta": {
     "category": "Sound Design",
     "description": "Inverse mode + gate \u2014 breathy ghost of the original, barely there"
-  }
+  },
+  "inverse": 1
 }

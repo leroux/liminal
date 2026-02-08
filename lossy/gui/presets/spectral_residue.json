@@ -1,5 +1,4 @@
 {
-  "mode": 1,
   "loss": 0.55,
   "window_size": 2048,
   "global_amount": 1.0,
@@ -18,5 +17,6 @@
   "_meta": {
     "category": "Ghost / Residue",
     "description": "Inverse mode \u2014 ghostly harmonics the codec discards"
-  }
+  },
+  "inverse": 1
 }

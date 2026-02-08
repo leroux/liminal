@@ -1,0 +1,15 @@
+{
+  "jitter": 0.45,
+  "loss": 0.0,
+  "window_size": 512,
+  "phase_loss": 0.3,
+  "filter_type": 1,
+  "filter_freq": 3500.0,
+  "filter_width": 0.4,
+  "filter_slope": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Jitter",
+    "description": "Phase jitter through bright bandpass \u2014 glassy, brittle instability"
+  }
+}

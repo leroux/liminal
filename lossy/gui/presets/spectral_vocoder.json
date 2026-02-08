@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.7,
   "window_size": 2048,
   "phase_loss": 0.85,

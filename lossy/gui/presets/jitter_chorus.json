@@ -1,0 +1,13 @@
+{
+  "jitter": 0.35,
+  "loss": 0.0,
+  "window_size": 2048,
+  "verb": 0.25,
+  "decay": 0.6,
+  "verb_position": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Jitter",
+    "description": "Gentle phase jitter + post-verb \u2014 shimmery unstable chorus"
+  }
+}

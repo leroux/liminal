@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.35,
   "window_size": 4096,
   "freeze": 1,

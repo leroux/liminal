@@ -1,5 +1,4 @@
 {
-  "mode": 1,
   "loss": 0.6,
   "window_size": 4096,
   "global_amount": 1.0,
@@ -25,5 +24,6 @@
   "_meta": {
     "category": "Ghost / Residue",
     "description": "Faint spectral residue \u2014 barely-there harmonics"
-  }
+  },
+  "inverse": 1
 }

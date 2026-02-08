@@ -1,0 +1,15 @@
+{
+  "loss": 0.55,
+  "window_size": 4096,
+  "noise_shape": 1.0,
+  "quantizer": 1,
+  "verb": 0.5,
+  "decay": 0.7,
+  "verb_position": 0,
+  "auto_gain": 0.4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Noise Shape",
+    "description": "Max noise shaping on reverb tail \u2014 verb decays into envelope-shaped spectral grit"
+  }
+}

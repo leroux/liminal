@@ -1,0 +1,10 @@
+{
+  "loss": 0.6,
+  "window_size": 2048,
+  "n_bands": 2,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Only 2 spectral bands \u2014 binary all-or-nothing gating, dramatic spectral holes"
+  }
+}

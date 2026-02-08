@@ -20,10 +20,10 @@ from lossy.engine.params import (
     default_params,
     bypass_params,
     migrate_legacy_params,
+
     PARAM_RANGES,
     PARAM_SECTIONS,
     CHOICE_RANGES,
-    MODE_NAMES,
     QUANTIZER_NAMES,
     PACKET_NAMES,
     FILTER_NAMES,
@@ -200,15 +200,12 @@ class LossyGUI:
         # ---- Spectral Loss ----
         r = self._add_section_header(f, r, "spectral", "SPECTRAL LOSS")
 
-        ttk.Label(f, text="Mode").grid(row=r, column=0, sticky="w", padx=8)
-        self._mode_var = tk.IntVar(value=self.params["mode"])
-        mode_frame = ttk.Frame(f)
-        mode_frame.grid(row=r, column=1, sticky="w")
-        for i, name in enumerate(MODE_NAMES):
-            ttk.Radiobutton(mode_frame, text=name, variable=self._mode_var, value=i).pack(side="left", padx=3)
-        self._add_lock(f, r, "mode")
+        self._inverse_var = tk.IntVar(value=self.params["inverse"])
+        ttk.Checkbutton(f, text="Inverse (residual)", variable=self._inverse_var).grid(row=r, column=0, columnspan=2, sticky="w", padx=8)
+        self._add_lock(f, r, "inverse")
         r += 1
 
+        r = self._add_slider(f, r, "jitter", "Jitter", 0.0, 1.0, self.params["jitter"], length=SL)
         r = self._add_slider(f, r, "loss", "Loss", 0.0, 1.0, self.params["loss"], length=SL)
         r = self._add_slider(f, r, "window_size", "Window Size", 64, 16384, self.params["window_size"], length=SL, integer=True)
         r = self._add_slider(f, r, "hop_divisor", "Hop Divisor", 1, 8, self.params["hop_divisor"], length=SL, integer=True)
@@ -350,7 +347,7 @@ class LossyGUI:
         r = self._add_slider(f, r, "tail_length", "Tail Length (s)", 0.0, 60.0, 2.0, length=SL)
 
         # Auto-play on discrete parameter change
-        for var in [self._mode_var, self._quantizer_var, self._packets_var,
+        for var in [self._inverse_var, self._quantizer_var, self._packets_var,
                     self._filter_var, self._slope_var, self._freeze_var,
                     self._freeze_mode_var, self._verb_pos_var, self._bounce_var,
                     self._bounce_target_var]:
@@ -594,7 +591,7 @@ class LossyGUI:
             self.sliders[key].set(val)
         # Integer/choice params
         var_map = {
-            "mode": self._mode_var,
+            "inverse": self._inverse_var,
             "quantizer": self._quantizer_var,
             "packets": self._packets_var,
             "filter_type": self._filter_var,
@@ -618,6 +615,14 @@ class LossyGUI:
 
     def _build_presets_page(self):
         f = self.presets_frame
+
+        # Search box
+        search_frame = ttk.Frame(f)
+        search_frame.pack(fill="x", padx=8, pady=(8, 0))
+        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 4))
+        self._preset_search_var = tk.StringVar()
+        self._preset_search_var.trace_add("write", lambda *_: self._refresh_preset_list())
+        ttk.Entry(search_frame, textvariable=self._preset_search_var).pack(side="left", fill="x", expand=True)
 
         # Left: Treeview grouped by category
         tree_frame = ttk.Frame(f)
@@ -649,6 +654,7 @@ class LossyGUI:
         ttk.Button(btn, text="Save", command=self._on_save_preset).pack(fill="x", pady=2)
         ttk.Button(btn, text="Delete", command=self._on_delete_preset).pack(fill="x", pady=2)
         ttk.Button(btn, text="Refresh", command=self._refresh_preset_list).pack(fill="x", pady=2)
+        ttk.Button(btn, text="★ Favorite", command=self._on_toggle_favorite).pack(fill="x", pady=2)
 
         self._preset_meta = {}  # name -> {category, description}
         self._refresh_preset_list()
@@ -657,11 +663,12 @@ class LossyGUI:
         self.preset_tree.delete(*self.preset_tree.get_children())
         self._preset_meta.clear()
         os.makedirs(PRESET_DIR, exist_ok=True)
+        favorites = self._load_favorites()
 
         # Read all presets and group by category
         categories = {}
         for filename in sorted(os.listdir(PRESET_DIR)):
-            if not filename.endswith(".json"):
+            if not filename.endswith(".json") or filename == "favorites.json":
                 continue
             name = filename[:-5]
             path = os.path.join(PRESET_DIR, filename)
@@ -675,6 +682,27 @@ class LossyGUI:
             desc = meta.get("description", "")
             self._preset_meta[name] = {"category": cat, "description": desc}
             categories.setdefault(cat, []).append(name)
+
+        # Filter by search query
+        query = ""
+        if hasattr(self, "_preset_search_var"):
+            query = self._preset_search_var.get().strip().lower()
+
+        def _matches(name):
+            if not query:
+                return True
+            meta = self._preset_meta.get(name, {})
+            return query in name.lower() or query in meta.get("description", "").lower()
+
+        # Favorites group at top (only if any favorites exist among loaded presets)
+        fav_names = sorted(n for n in favorites if n in self._preset_meta and _matches(n))
+        if fav_names:
+            fav_id = self.preset_tree.insert("", "end", text="★ Favorites", open=True,
+                                              values=("", ""))
+            for name in fav_names:
+                desc = self._preset_meta[name].get("description", "")
+                self.preset_tree.insert(fav_id, "end", text=f"★ {name}",
+                                         values=(desc, name))
 
         # Category display order
         cat_order = ["Codec", "Communication", "Lo-fi", "Textural",
@@ -691,12 +719,45 @@ class LossyGUI:
                 ordered_cats.append(c)
 
         for cat in ordered_cats:
+            filtered = [n for n in categories[cat] if _matches(n)]
+            if not filtered:
+                continue
             cat_id = self.preset_tree.insert("", "end", text=cat, open=True,
                                               values=("", ""))
-            for name in categories[cat]:
+            for name in filtered:
                 desc = self._preset_meta[name].get("description", "")
-                self.preset_tree.insert(cat_id, "end", text=name,
+                display = f"★ {name}" if name in favorites else name
+                self.preset_tree.insert(cat_id, "end", text=display,
                                          values=(desc, name))
+
+    def _load_favorites(self):
+        path = os.path.join(PRESET_DIR, "favorites.json")
+        try:
+            with open(path) as fh:
+                return set(json.load(fh))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return set()
+
+    def _save_favorites(self, favorites):
+        path = os.path.join(PRESET_DIR, "favorites.json")
+        os.makedirs(PRESET_DIR, exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(sorted(favorites), fh, indent=2)
+            fh.write("\n")
+
+    def _on_toggle_favorite(self):
+        name = self._get_selected_preset_name()
+        if not name:
+            return
+        favorites = self._load_favorites()
+        if name in favorites:
+            favorites.discard(name)
+            self.status_var.set(f"Removed from favorites: {name}")
+        else:
+            favorites.add(name)
+            self.status_var.set(f"Added to favorites: {name}")
+        self._save_favorites(favorites)
+        self._refresh_preset_list()
 
     def _get_selected_preset_name(self):
         sel = self.preset_tree.selection()
@@ -994,14 +1055,13 @@ class LossyGUI:
                 "Master intensity — scales Loss, Phase, Crush, Packets, Verb, Gate together.")
         body("")
 
-        h2("Mode Toggle (3-way)")
-        mapping("Standard", "Mode: Standard",
-                "Quantize FFT magnitudes + psychoacoustic band gating each frame.")
-        mapping("Inverse", "Mode: Inverse",
-                "Output the spectral residual — everything Standard throws away.")
-        mapping("Jitter", "Mode: Jitter",
-                "Random phase perturbation per FFT bin. Emulates bad digital clocking.")
+        h2("Inverse + Jitter (independent controls)")
+        mapping("Standard/Inverse", "Inverse checkbox",
+                "Off = hear processed signal. On = hear the residual (everything Standard discards).")
+        mapping("Jitter", "Jitter slider",
+                "Random phase perturbation per FFT bin (0=off, 1=max). Emulates bad digital clocking.")
         body("")
+        body("Inverse and Jitter are independent — you can combine them (e.g. inverse+jitter).")
         body('The "underwater" warble comes from zeroing different bands each frame.')
         body("Band gating is weighted by signal energy and the ATH (Absolute Threshold")
         body("of Hearing) curve — quieter bands at less-sensitive frequencies get gated")
@@ -1146,7 +1206,7 @@ class LossyGUI:
 
     def _read_params_from_ui(self):
         p = default_params()
-        p["mode"] = self._mode_var.get()
+        p["inverse"] = self._inverse_var.get()
         p["quantizer"] = self._quantizer_var.get()
         p["packets"] = self._packets_var.get()
         p["filter_type"] = self._filter_var.get()
@@ -1161,7 +1221,7 @@ class LossyGUI:
         return p
 
     def _write_params_to_ui(self, p):
-        self._mode_var.set(p.get("mode", 0))
+        self._inverse_var.set(p.get("inverse", 0))
         self._quantizer_var.set(p.get("quantizer", 0))
         self._packets_var.set(p.get("packets", 0))
         self._filter_var.set(p.get("filter_type", 0))

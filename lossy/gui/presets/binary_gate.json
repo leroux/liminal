@@ -1,0 +1,12 @@
+{
+  "loss": 0.7,
+  "window_size": 2048,
+  "n_bands": 2,
+  "weighting": 0.0,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Extreme Bands",
+    "description": "Only 2 bands \u2014 binary low/high gating, half the spectrum vanishes at a time"
+  }
+}

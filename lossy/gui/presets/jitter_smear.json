@@ -1,0 +1,13 @@
+{
+  "jitter": 0.8,
+  "loss": 0.0,
+  "window_size": 4096,
+  "verb": 0.5,
+  "decay": 0.8,
+  "verb_position": 0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Jitter",
+    "description": "Heavy phase scramble on large windows \u2014 reverb dissolves into shimmering noise"
+  }
+}

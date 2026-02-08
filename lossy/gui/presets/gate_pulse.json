@@ -1,0 +1,16 @@
+{
+  "loss": 0.5,
+  "window_size": 2048,
+  "gate": 0.15,
+  "bounce": 1,
+  "bounce_target": 6,
+  "bounce_rate": 0.35,
+  "bounce_lfo_min": 0.5,
+  "bounce_lfo_max": 4.0,
+  "auto_gain": 0.3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Bounce Gate",
+    "description": "LFO modulating gate threshold \u2014 rhythmic ducking and breathing on the degraded signal"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "inverse": 1,
+  "jitter": 0.35,
+  "loss": 0.5,
+  "window_size": 2048,
+  "verb": 0.3,
+  "decay": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Inverse + jitter \u2014 ghostly residual with shimmering phase drift"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "loss": 0.4,
+  "window_size": 64,
+  "hop_divisor": 2,
+  "n_bands": 4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Granular",
+    "description": "64-sample window \u2014 pitched buzzing, ring-mod territory. Granular synthesis from codec math."
+  }
+}

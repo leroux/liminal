@@ -1,0 +1,15 @@
+{
+  "loss": 0.3,
+  "window_size": 2048,
+  "filter_type": 1,
+  "filter_freq": 800.0,
+  "filter_width": 0.05,
+  "filter_slope": 2,
+  "verb": 0.5,
+  "decay": 0.85,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "96dB bandpass + high verb decay \u2014 filter pushed toward self-oscillation, tonal pitched artifacts"
+  }
+}

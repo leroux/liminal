@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.75,
   "window_size": 4096,
   "bounce": 1,

@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.35,
   "window_size": 2048,
   "filter_type": 1,

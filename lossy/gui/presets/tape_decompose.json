@@ -1,0 +1,22 @@
+{
+  "loss": 0.5,
+  "window_size": 4096,
+  "quantizer": 1,
+  "noise_shape": 0.7,
+  "hf_threshold": 0.2,
+  "verb": 0.6,
+  "decay": 0.85,
+  "verb_position": 0,
+  "crush": 0.1,
+  "bounce": 1,
+  "bounce_target": 0,
+  "bounce_rate": 0.05,
+  "bounce_lfo_min": 0.01,
+  "bounce_lfo_max": 0.05,
+  "auto_gain": 0.3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Slow Cinematic",
+    "description": "Very slow loss modulation + long verb \u2014 like a recording decomposing on a shelf over decades"
+  }
+}

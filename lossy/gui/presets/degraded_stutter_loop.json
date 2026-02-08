@@ -1,0 +1,19 @@
+{
+  "loss": 0.7,
+  "window_size": 256,
+  "crush": 0.5,
+  "decimate": 0.4,
+  "packets": 2,
+  "packet_rate": 0.6,
+  "packet_size": 100.0,
+  "filter_type": 1,
+  "filter_freq": 2500.0,
+  "filter_width": 0.4,
+  "filter_slope": 1,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Layered Abuse",
+    "description": "Small window + crush + decimate + packet repeat + bandpass \u2014 glitchy stuttering destruction"
+  }
+}

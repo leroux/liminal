@@ -1,5 +1,4 @@
 {
-  "mode": 1,
   "loss": 0.55,
   "window_size": 4096,
   "verb": 0.9,
@@ -12,5 +11,6 @@
   "_meta": {
     "category": "Ghost / Residue",
     "description": "Inverse mode + post verb \u2014 ghostly reverbed residuals"
-  }
+  },
+  "inverse": 1
 }

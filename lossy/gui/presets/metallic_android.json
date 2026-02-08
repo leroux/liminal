@@ -1,6 +1,6 @@
 {
-  "mode": 2,
-  "loss": 0.5,
+  "jitter": 0.5,
+  "loss": 0.0,
   "window_size": 512,
   "phase_loss": 0.6,
   "decimate": 0.25,

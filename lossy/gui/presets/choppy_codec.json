@@ -1,0 +1,11 @@
+{
+  "loss": 0.5,
+  "window_size": 1024,
+  "hop_divisor": 1,
+  "n_bands": 12,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Glitch",
+    "description": "hop_divisor=1 (no overlap) \u2014 choppy frame-by-frame processing, rhythmic spectral stutter"
+  }
+}

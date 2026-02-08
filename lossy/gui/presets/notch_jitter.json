@@ -1,0 +1,14 @@
+{
+  "jitter": 0.4,
+  "loss": 0.3,
+  "window_size": 2048,
+  "filter_type": 2,
+  "filter_freq": 900.0,
+  "filter_width": 0.15,
+  "filter_slope": 2,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Notch",
+    "description": "Deep notch + jitter \u2014 phaser-like spectral hole with unstable phase, hollow and shimmering"
+  }
+}

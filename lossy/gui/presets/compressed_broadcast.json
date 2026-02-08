@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.45,
   "window_size": 2048,
   "threshold": 0.1,

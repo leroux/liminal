@@ -1,0 +1,13 @@
+{
+  "loss": 0.4,
+  "window_size": 2048,
+  "filter_type": 2,
+  "filter_freq": 1200.0,
+  "filter_width": 0.2,
+  "filter_slope": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Notch",
+    "description": "Notch filter + mild loss \u2014 phaser-like spectral hole with codec warble"
+  }
+}

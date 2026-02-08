@@ -1,0 +1,18 @@
+{
+  "loss": 0.35,
+  "window_size": 2048,
+  "filter_type": 2,
+  "filter_freq": 800.0,
+  "filter_width": 0.15,
+  "filter_slope": 2,
+  "bounce": 1,
+  "bounce_target": 5,
+  "bounce_rate": 0.2,
+  "bounce_lfo_min": 0.1,
+  "bounce_lfo_max": 0.8,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Notch",
+    "description": "Deep notch sweeping via LFO \u2014 phaser effect through degraded spectrum"
+  }
+}

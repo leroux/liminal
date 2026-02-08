@@ -1,0 +1,12 @@
+{
+  "inverse": 0,
+  "jitter": 0.6,
+  "phase_loss": 0.4,
+  "loss": 0.5,
+  "window_size": 2048,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Jitter Combo",
+    "description": "Standard loss + jitter + phase quantization \u2014 maximum phase destruction, smeared and metallic"
+  }
+}

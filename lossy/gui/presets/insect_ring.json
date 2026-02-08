@@ -1,0 +1,16 @@
+{
+  "loss": 0.5,
+  "jitter": 0.3,
+  "window_size": 128,
+  "hop_divisor": 4,
+  "n_bands": 6,
+  "filter_type": 1,
+  "filter_freq": 2500.0,
+  "filter_width": 0.5,
+  "filter_slope": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Granular",
+    "description": "128-sample window + jitter + bandpass \u2014 insectoid ring modulation with phase instability"
+  }
+}
