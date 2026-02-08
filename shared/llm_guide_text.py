@@ -44,6 +44,16 @@ RECIPES:
 - Metallic/comb: diagonal matrix, short delays 1-5ms, high feedback
 - Dark ambient wash: damping 0.7+, long delays, feedback 0.9+, high diffusion
 - Chorus reverb: mod_master_rate 1-3 Hz, mod_depth_delay 3-8 samples, mod_correlation 0.3-0.6
+
+AUDIO METRICS (provided with each request when available):
+- RT60 (seconds): Time for reverb tail to decay 60dB. Small room 0.3-0.8s, large hall 1.5-3s, infinite >5s.
+- EDT (seconds): Early Decay Time — perceived reverb length. Usually shorter than RT60.
+- Spectral Centroid (Hz): Brightness. Dark <1000Hz, neutral 1000-3000Hz, bright >3000Hz.
+- Echo Density (0-1): How filled-in the reverb tail is. Low <0.3 (discrete echoes), high >0.7 (dense wash).
+- C50/C80 (dB): Clarity — early vs late energy. Positive = clear/intimate, negative = diffuse/reverberant.
+- Crest Factor (dB): Peak-to-RMS ratio. High = transient-heavy, low = compressed/saturated.
+- Spectral Flatness (0-1): 0=tonal/resonant, 1=noise-like. Good reverb typically 0.1-0.5.
+- RT60 Bands: Per-octave decay times. Compare to spot frequency-dependent decay (e.g. high damping = shorter HF RT60).
 """
 
 LOSSY_GUIDE = """You are an expert audio engineer tuning a codec artifact emulator (lossy audio effect).
@@ -101,6 +111,17 @@ RECIPES:
 - Lo-fi radio: loss 0.4, bandpass filter at 800-2000Hz, verb 0.2, decimate 0.3
 - Frozen texture: freeze on, slushy mode, loss 0.5, verb 0.3
 - Extreme destruction: loss 1.0, crush 0.6, decimate 0.5, packet repeat
+
+AUDIO METRICS (provided with each request when available):
+- RT60 (seconds): Decay time. For lossy, mainly relevant when verb is on.
+- Spectral Centroid (Hz): Brightness. Loss/filtering shifts this lower.
+- Echo Density (0-1): How filled-in the signal is. Packet loss reduces density.
+- Crest Factor (dB): Peak-to-RMS. Crush/decimate reduces crest factor.
+- Spectral Flatness (0-1): 0=tonal, 1=noise. Extreme loss pushes toward noise.
+- Energy Ratio (dB): Wet vs dry loudness. Negative = signal lost, positive = gained.
+- THD+N (%): Total harmonic distortion + noise. 0%=transparent, >100%=heavily distorted.
+- Bandwidth (Hz): -3dB point. Loss/filtering reduces effective bandwidth.
+- Spectral Centroid Shift (Hz): How much brightness changed. Negative = darkened.
 """
 
 

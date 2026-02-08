@@ -23,6 +23,7 @@ from reverb.primitives.matrix import MATRIX_TYPES, get_matrix, nearest_unitary, 
 from shared.llm_guide_text import REVERB_GUIDE, REVERB_PARAM_DESCRIPTIONS
 from shared.llm_tuner import LLMTuner
 from shared.streaming import safety_check, normalize_output
+from shared.waveform import draw_waveform
 
 PRESET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets")
 TEST_SIGNALS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -39,6 +40,7 @@ class ReverbGUI:
         self.rendered_audio = None
         self.rendered_warning = ""
         self.rendered_params = None
+        self.rendered_metrics = None
         self.rendering = False
         self.sliders = {}
         self.custom_matrix = None  # 8x8 numpy array when using custom topology
@@ -104,9 +106,13 @@ class ReverbGUI:
         notebook.add(desc_page, text="Signal Flow")
         self._build_description_page(desc_page)
 
-        wave_page = ttk.Frame(notebook, padding=10)
-        notebook.add(wave_page, text="Waveform")
-        self._build_waveform_page(wave_page)
+        input_wave_page = ttk.Frame(notebook, padding=10)
+        notebook.add(input_wave_page, text="Input Waveform")
+        self._build_input_waveform_page(input_wave_page)
+
+        output_wave_page = ttk.Frame(notebook, padding=10)
+        notebook.add(output_wave_page, text="Output Waveform")
+        self._build_output_waveform_page(output_wave_page)
 
         guide_page = ttk.Frame(notebook, padding=10)
         notebook.add(guide_page, text="Guide")
@@ -431,6 +437,10 @@ class ReverbGUI:
             on_params=self._on_claude_params,
             on_done=self._on_claude_done,
             on_error=self._on_claude_error,
+            metrics=self.rendered_metrics,
+            source_metrics=getattr(self, 'source_metrics', None),
+            spectrogram_png=getattr(self, 'rendered_spectrogram', None),
+            source_spectrogram_png=getattr(self, 'source_spectrogram', None),
         )
 
     def _on_claude_text(self, text):
@@ -819,169 +829,31 @@ class ReverbGUI:
 
         text.configure(state="disabled")
 
-    def _build_waveform_page(self, parent):
+    def _build_input_waveform_page(self, parent):
+        self.input_waveform_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
+        self.input_waveform_canvas.pack(fill="both", expand=True)
+        self.input_waveform_canvas.bind("<Configure>", lambda e: self._draw_input_waveform())
+
+    def _build_output_waveform_page(self, parent):
         self.waveform_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
         self.waveform_canvas.pack(fill="both", expand=True)
         self.waveform_canvas.bind("<Configure>", lambda e: self._draw_waveform())
 
+    def _draw_input_waveform(self):
+        draw_waveform(self.input_waveform_canvas, self.source_audio, SR,
+                      getattr(self, 'source_metrics', None), "Input")
+
     def _draw_waveform(self):
-        c = self.waveform_canvas
-        c.delete("all")
-        c.update_idletasks()
-        W = c.winfo_width() or 900
-        H = c.winfo_height() or 500
-
-        TITLE_COL = "#e0e0e0"
-        GRID_COL = "#222233"
-        LABEL_COL = "#666688"
-        WAVE_COL = "#4a9acc"
-        RMS_COL = "#cc8844"
-        F_TITLE = ("Helvetica", 12, "bold")
-        F_LABEL = ("Helvetica", 9)
-
-        pad_top = 35
-        pad_bot = 40
-        pad_left = 50
-        pad_right = 20
-        plot_w = W - pad_left - pad_right
-        plot_h = H - pad_top - pad_bot
-
-        if plot_w < 50 or plot_h < 30:
-            return
-
-        raw_audio = self.rendered_audio
-        if raw_audio is None:
-            c.create_text(W // 2, H // 2, text="No rendered audio yet — press Play first",
-                          fill=LABEL_COL, font=F_TITLE)
-            return
-
-        stereo = raw_audio.ndim == 2
-        n_samples = raw_audio.shape[0] if stereo else len(raw_audio)
-        duration = n_samples / SR
-
-        if stereo:
-            ch_list = [(raw_audio[:, 0], WAVE_COL, "#1a3550", "L"),
-                       (raw_audio[:, 1], "#cc6644", "#3a2218", "R")]
-        else:
-            ch_list = [(raw_audio, WAVE_COL, "#1a3550", None)]
-
-        n_channels = len(ch_list)
-        ch_label = "Stereo" if stereo else "Mono"
-        c.create_text(W // 2, 16,
-                      text=f"Rendered Waveform — {ch_label} — {duration:.1f}s — {n_samples} samples",
-                      fill=TITLE_COL, font=F_TITLE)
-
-        # Each channel gets an equal vertical slice of the plot area
-        for ch_idx, (audio, wave_col, fill_col, label) in enumerate(ch_list):
-            ch_top = pad_top + ch_idx * (plot_h // n_channels)
-            ch_h = plot_h // n_channels
-            zero_y = ch_top + ch_h / 2
-
-            # Plot area background
-            c.create_rectangle(pad_left, ch_top, pad_left + plot_w, ch_top + ch_h,
-                               fill="#0a0a14", outline="#333355")
-
-            # Grid lines and labels (amplitude)
-            for amp in [-0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75]:
-                y = zero_y - amp * ch_h / 2
-                c.create_line(pad_left, y, pad_left + plot_w, y, fill=GRID_COL)
-                if amp in (-0.5, 0.0, 0.5) and ch_idx == 0:
-                    c.create_text(pad_left - 5, y, text=f"{amp:.1f}",
-                                  fill=LABEL_COL, font=F_LABEL, anchor="e")
-
-            # Zero line
-            c.create_line(pad_left, zero_y, pad_left + plot_w, zero_y, fill="#333355", width=1)
-
-            # Channel label
-            if label:
-                c.create_text(pad_left + 6, ch_top + 4, text=label,
-                              fill=wave_col, font=F_LABEL, anchor="nw")
-
-            # Time grid lines (only on first channel to avoid overlap)
-            if ch_idx == 0:
-                time_step = max(0.5, round(duration / 8, 1))
-                t = 0.0
-                while t <= duration:
-                    x = pad_left + (t / duration) * plot_w
-                    c.create_line(x, pad_top, x, pad_top + plot_h, fill=GRID_COL)
-                    c.create_text(x, pad_top + plot_h + 12, text=f"{t:.1f}s",
-                                  fill=LABEL_COL, font=F_LABEL)
-                    t += time_step
-
-            # Downsample for display: compute min/max per pixel column
-            n_cols = min(plot_w, n_samples)
-            wave_points_top = []
-            wave_points_bot = []
-            for col in range(n_cols):
-                start = int(col * n_samples / n_cols)
-                end = min(int((col + 1) * n_samples / n_cols), n_samples)
-                if start >= end:
-                    continue
-                chunk = audio[start:end]
-                mn = float(np.min(chunk))
-                mx = float(np.max(chunk))
-                x = pad_left + col
-                y_top = zero_y - mx * (ch_h / 2)
-                y_bot = zero_y - mn * (ch_h / 2)
-                y_top = max(ch_top, min(ch_top + ch_h, y_top))
-                y_bot = max(ch_top, min(ch_top + ch_h, y_bot))
-                wave_points_top.append((x, y_top))
-                wave_points_bot.append((x, y_bot))
-
-            # Draw filled waveform envelope
-            if wave_points_top and wave_points_bot:
-                poly = []
-                for x, y in wave_points_top:
-                    poly.extend([x, y])
-                for x, y in reversed(wave_points_bot):
-                    poly.extend([x, y])
-                if len(poly) >= 6:
-                    c.create_polygon(poly, fill=fill_col, outline="")
-                if len(wave_points_top) >= 2:
-                    top_flat = []
-                    for x, y in wave_points_top:
-                        top_flat.extend([x, y])
-                    c.create_line(*top_flat, fill=wave_col, width=1)
-                if len(wave_points_bot) >= 2:
-                    bot_flat = []
-                    for x, y in wave_points_bot:
-                        bot_flat.extend([x, y])
-                    c.create_line(*bot_flat, fill=wave_col, width=1)
-
-            # RMS envelope (windowed)
-            rms_window = max(1, n_samples // 200)
-            rms_points = []
-            for col in range(min(200, n_cols)):
-                start = int(col * n_samples / 200)
-                end = min(start + rms_window * 2, n_samples)
-                if start >= end:
-                    continue
-                chunk = audio[start:end]
-                rms = float(np.sqrt(np.mean(chunk ** 2)))
-                x = pad_left + (col / 200) * plot_w
-                y = zero_y - rms * (ch_h / 2)
-                y = max(ch_top, min(ch_top + ch_h, y))
-                rms_points.extend([x, y])
-            if len(rms_points) >= 4:
-                c.create_line(*rms_points, fill=RMS_COL, width=1.5, smooth=True)
-
-        # Stats (from full audio)
-        peak = float(np.max(np.abs(raw_audio)))
-        rms_total = float(np.sqrt(np.mean(raw_audio ** 2)))
-        stats_y = pad_top + plot_h + 28
-        c.create_text(pad_left, stats_y, text=f"Peak: {peak:.3f}",
-                      fill=WAVE_COL, font=F_LABEL, anchor="w")
-        c.create_text(pad_left + 120, stats_y, text=f"RMS: {rms_total:.3f}",
-                      fill=RMS_COL, font=F_LABEL, anchor="w")
-        if hasattr(self, 'rendered_warning') and self.rendered_warning:
-            c.create_text(pad_left + 240, stats_y, text=self.rendered_warning.strip(),
-                          fill="#dd6666", font=F_LABEL, anchor="w")
+        draw_waveform(self.waveform_canvas, self.rendered_audio, SR,
+                      self.rendered_metrics, "Output", self.rendered_warning)
 
     def _on_tab_changed(self, event=None):
         idx = self._notebook.index("current")
         if idx == 2:  # Signal Flow tab
             self._draw_diagram()
-        elif idx == 3:  # Waveform tab
+        elif idx == 3:  # Input Waveform tab
+            self._draw_input_waveform()
+        elif idx == 4:  # Output Waveform tab
             self._draw_waveform()
 
     def _schedule_autoplay(self):
@@ -1778,6 +1650,14 @@ class ReverbGUI:
         self.rendered_warning = ""
         self.rendered_params = None
 
+        # Analyze source for LLM context
+        from shared.analysis import analyze
+        from shared.audio_features import generate_spectrogram_png
+        self.source_metrics = analyze(audio, SR)
+        self.source_spectrogram = generate_spectrogram_png(audio, SR)
+        if hasattr(self, 'llm'):
+            self.llm.reset_session()
+
     def _source_text(self):
         if self.source_path:
             name = os.path.basename(self.source_path)
@@ -1793,6 +1673,7 @@ class ReverbGUI:
             self._load_wav(path)
             self.source_label.config(text=self._source_text())
             self.status_var.set("Loaded: " + os.path.basename(path))
+            self._draw_input_waveform()
 
     # ------------------------------------------------------------------
     # Render & Playback
@@ -1827,6 +1708,10 @@ class ReverbGUI:
 
                 output, loud_warning = normalize_output(output)
 
+                from shared.analysis import analyze
+                from shared.audio_features import generate_spectrogram_png
+                self.rendered_metrics = analyze(output, SR)
+                self.rendered_spectrogram = generate_spectrogram_png(output, SR)
                 self.rendered_audio = output
                 self.rendered_warning = loud_warning
                 self.rendered_params = self._params_snapshot(params)
