@@ -1,6 +1,6 @@
 """Lossy codec emulation GUI — tkinter.
 
-Tabs: Parameters · Presets · Waveform · Spectrum
+Tabs: Parameters · Presets · Waveforms · Spectrograms · Spectrum
 """
 
 import json
@@ -8,6 +8,7 @@ import math
 import os
 import random
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog
 
@@ -38,7 +39,9 @@ from lossy.engine.lossy import render_lossy
 from shared.llm_guide_text import LOSSY_GUIDE, LOSSY_PARAM_DESCRIPTIONS
 from shared.llm_tuner import LLMTuner
 from shared.streaming import safety_check, normalize_output
-from shared.waveform import draw_waveform as _shared_draw_waveform
+from shared.waveform import (draw_waveform as _shared_draw_waveform, draw_spectrogram,
+                              WAVE_PAD_LEFT, WAVE_PAD_RIGHT,
+                              SPEC_PAD_LEFT, SPEC_PAD_RIGHT)
 
 PRESET_DIR = os.path.join(os.path.dirname(__file__), "presets")
 DEFAULT_SOURCE = os.path.join(
@@ -67,6 +70,16 @@ class LossyGUI:
         self.section_locks = {}
         self._scroll_widgets = {}
         self._autoplay_id = None
+        self._cursor_timer = None
+        self._cursor_canvases = []
+        self._playback_start = None
+        self._playback_length = 0.0
+        self._playback_audio = None
+
+        # Generation history for rewind/forward
+        self._gen_history = []     # list of dicts: {params, audio, metrics, warning, spectrogram}
+        self._gen_index = -1       # current position in history
+        self._gen_max = 50         # max history entries
         self._load_wav(DEFAULT_SOURCE)
         self._build_ui()
 
@@ -145,6 +158,14 @@ class LossyGUI:
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=6)
         ttk.Button(top, text="Randomize", command=self._randomize_params).pack(side="left", padx=2)
         ttk.Button(top, text="Reset", command=self._reset_params).pack(side="left", padx=2)
+        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=6)
+        self._gen_back_btn = ttk.Button(top, text="<", width=2, command=self._on_gen_back)
+        self._gen_back_btn.pack(side="left", padx=1)
+        self._gen_label_var = tk.StringVar(value="Gen 0")
+        ttk.Label(top, textvariable=self._gen_label_var, width=8, anchor="center").pack(side="left")
+        self._gen_fwd_btn = ttk.Button(top, text=">", width=2, command=self._on_gen_forward)
+        self._gen_fwd_btn.pack(side="left", padx=1)
+        self._update_gen_buttons()
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(top, textvariable=self.status_var).pack(side="right")
@@ -155,22 +176,22 @@ class LossyGUI:
 
         self.params_frame = ttk.Frame(nb)
         self.presets_frame = ttk.Frame(nb)
-        self.input_wave_frame = ttk.Frame(nb)
-        self.wave_frame = ttk.Frame(nb)
+        self.waveforms_frame = ttk.Frame(nb, padding=5)
+        self.spectrograms_frame = ttk.Frame(nb, padding=5)
         self.spec_frame = ttk.Frame(nb)
         self.guide_frame = ttk.Frame(nb)
 
         nb.add(self.params_frame, text="Parameters")
         nb.add(self.presets_frame, text="Presets")
-        nb.add(self.input_wave_frame, text="Input Waveform")
-        nb.add(self.wave_frame, text="Output Waveform")
+        nb.add(self.waveforms_frame, text="Waveforms")
+        nb.add(self.spectrograms_frame, text="Spectrograms")
         nb.add(self.spec_frame, text="Spectrum")
         nb.add(self.guide_frame, text="Guide")
 
         self._build_params_page()
         self._build_presets_page()
-        self._build_input_wave_page()
-        self._build_wave_page()
+        self._build_waveforms_page()
+        self._build_spectrograms_page()
         self._build_spec_page()
         self._build_guide_page()
 
@@ -179,9 +200,12 @@ class LossyGUI:
     # ------------------------------------------------------------------
 
     def _build_params_page(self):
-        # Scrollable single-column layout (in a container so AI prompt sits below)
-        scroll_container = ttk.Frame(self.params_frame)
-        scroll_container.pack(side="top", fill="both", expand=True)
+        # Responsive container for params + AI chat
+        self._params_ai_container = ttk.Frame(self.params_frame)
+        self._params_ai_container.pack(fill="both", expand=True)
+
+        self._params_scroll_frame = ttk.Frame(self._params_ai_container)
+        scroll_container = self._params_scroll_frame
 
         canvas = tk.Canvas(scroll_container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
@@ -369,8 +393,12 @@ class LossyGUI:
                     self._bounce_target_var]:
             var.trace_add("write", lambda *_: self._schedule_autoplay())
 
-        # ============ AI TUNER (below scrollable params) ============
-        self._build_ai_prompt(self.params_frame)
+        # ============ AI TUNER (responsive right/bottom) ============
+        self._ai_chat_frame = ttk.Frame(self._params_ai_container)
+        self._build_ai_prompt(self._ai_chat_frame)
+        self._ai_layout_mode = None
+        self._params_ai_container.bind("<Configure>", self._on_ai_layout_configure)
+        self._apply_ai_layout("vertical")
 
     # ------------------------------------------------------------------
     # Slider helper
@@ -498,34 +526,92 @@ class LossyGUI:
     # ------------------------------------------------------------------
 
     def _build_ai_prompt(self, parent):
-        """Build the AI tuner widget group at the bottom of the params page."""
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(10, 5))
-        ttk.Label(parent, text="AI Tuner", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=5)
+        """Build the AI tuner widget group — output on top, input at bottom."""
+        ttk.Label(parent, text="AI Tuner", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=5, pady=(5, 2))
 
-        input_frame = ttk.Frame(parent)
-        input_frame.pack(fill="x", padx=5, pady=(2, 0))
+        # Response/output area (top, expands to fill available space)
+        resp_frame = ttk.Frame(parent)
+        resp_frame.pack(fill="both", expand=True, padx=5, pady=(2, 3))
+        resp_scroll = ttk.Scrollbar(resp_frame, orient="vertical")
+        self.ai_response = tk.Text(resp_frame, height=10, wrap="word", state="disabled",
+                                   bg="#222233", fg="#dddddd", font=("Helvetica", 10),
+                                   relief="solid", bd=1,
+                                   yscrollcommand=resp_scroll.set)
+        resp_scroll.configure(command=self.ai_response.yview)
+        self.ai_response.pack(side="left", fill="both", expand=True)
+        resp_scroll.pack(side="right", fill="y")
+        self.ai_response.tag_configure("user_label", foreground="#66ccff", font=("Helvetica", 10, "bold"))
+        self.ai_response.tag_configure("user_msg", foreground="#aaccdd")
+        self.ai_response.tag_configure("asst_label", foreground="#bb88ff", font=("Helvetica", 10, "bold"))
+        self.ai_response.tag_configure("system_notice", foreground="#888899", font=("Helvetica", 9, "italic"))
 
-        self.ai_input = tk.Text(input_frame, height=2, wrap="word",
-                                bg="#2a2a3e", fg="#eeeeee", insertbackground="#eeeeee",
-                                font=("Helvetica", 11), relief="solid", bd=1)
-        self.ai_input.pack(fill="x", side="top")
-        self.ai_input.bind("<Shift-Return>", lambda e: (self._on_ask_claude(), "break"))
-
+        # Buttons
         btn_frame = ttk.Frame(parent)
-        btn_frame.pack(fill="x", padx=5, pady=(3, 0))
+        btn_frame.pack(fill="x", padx=5, pady=(0, 3))
         self.ai_ask_btn = ttk.Button(btn_frame, text="Ask Claude", command=self._on_ask_claude)
         self.ai_ask_btn.pack(side="left", padx=(0, 4))
         ttk.Button(btn_frame, text="Undo", command=self._on_ai_undo).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="New Session", command=self._on_ai_new_session).pack(side="left", padx=2)
-        ttk.Label(btn_frame, text="Shift+Enter to send", foreground="#666688",
+        self.ai_stop_btn = ttk.Button(btn_frame, text="Stop Tuning",
+                                       command=self._on_stop_tuning, state="disabled")
+        self.ai_stop_btn.pack(side="left", padx=2)
+        ttk.Label(btn_frame, text="Enter to send", foreground="#666688",
                   font=("Helvetica", 9)).pack(side="left", padx=8)
         self.ai_status_var = tk.StringVar(value="")
         ttk.Label(btn_frame, textvariable=self.ai_status_var).pack(side="left", padx=4)
 
-        self.ai_response = tk.Text(parent, height=8, wrap="word", state="disabled",
-                                   bg="#222233", fg="#dddddd", font=("Helvetica", 10),
-                                   relief="solid", bd=1)
-        self.ai_response.pack(fill="x", padx=5, pady=(3, 8))
+        # Input area (bottom, 4 lines)
+        input_frame = ttk.Frame(parent)
+        input_frame.pack(fill="x", padx=5, pady=(0, 5))
+        input_scroll = ttk.Scrollbar(input_frame, orient="vertical")
+        self.ai_input = tk.Text(input_frame, height=4, wrap="word",
+                                bg="#2a2a3e", fg="#eeeeee", insertbackground="#eeeeee",
+                                font=("Helvetica", 11), relief="solid", bd=1,
+                                yscrollcommand=input_scroll.set)
+        input_scroll.configure(command=self.ai_input.yview)
+        self.ai_input.pack(side="left", fill="both", expand=True)
+        input_scroll.pack(side="right", fill="y")
+        self.ai_input.bind("<Return>", self._on_ai_return)
+        self.ai_input.bind("<Shift-Return>", self._on_ai_shift_return)
+
+    def _on_ai_return(self, event):
+        """Send on Return and prevent newline insertion."""
+        self._on_ask_claude()
+        return "break"
+
+    def _on_ai_shift_return(self, event):
+        """Insert newline on Shift+Return."""
+        self.ai_input.insert("insert", "\n")
+        return "break"
+
+    def _on_ai_layout_configure(self, event):
+        """Switch between horizontal and vertical AI layout based on width."""
+        width = event.width
+        if width > 1200 and self._ai_layout_mode != "horizontal":
+            self._apply_ai_layout("horizontal")
+        elif width <= 1200 and self._ai_layout_mode != "vertical":
+            self._apply_ai_layout("vertical")
+
+    def _apply_ai_layout(self, mode):
+        """Apply the given layout mode for params + AI chat."""
+        self._ai_layout_mode = mode
+        self._params_scroll_frame.grid_forget()
+        self._ai_chat_frame.grid_forget()
+        if mode == "horizontal":
+            self._params_ai_container.columnconfigure(0, weight=4, minsize=400)
+            self._params_ai_container.columnconfigure(1, weight=1, minsize=280)
+            self._params_ai_container.rowconfigure(0, weight=1)
+            self._params_ai_container.rowconfigure(1, weight=0)
+            self._params_scroll_frame.grid(row=0, column=0, sticky="nsew")
+            self._ai_chat_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        else:
+            self._params_ai_container.columnconfigure(0, weight=1)
+            self._params_ai_container.columnconfigure(1, weight=0)
+            self._params_ai_container.rowconfigure(0, weight=1)
+            self._params_ai_container.rowconfigure(1, weight=0)
+            self._params_scroll_frame.grid(row=0, column=0, sticky="nsew")
+            self._ai_chat_frame.grid(row=1, column=0, sticky="ew")
+            self.ai_response.configure(height=10)
 
     def _on_ask_claude(self):
         prompt = self.ai_input.get("1.0", "end-1c").strip()
@@ -533,11 +619,14 @@ class LossyGUI:
             return
         self.ai_status_var.set("Thinking...")
         self.ai_ask_btn.configure(state="disabled")
+        self.ai_stop_btn.configure(state="normal")
         # Show user message in response box
         self.ai_response.configure(state="normal")
-        self.ai_response.insert("end", f"\n> {prompt}\n\n")
+        self.ai_response.insert("end", "\nYou: ", "user_label")
+        self.ai_response.insert("end", f"{prompt}\n\n", "user_msg")
         self.ai_response.configure(state="disabled")
         self.ai_input.delete("1.0", "end")
+        self._ai_needs_label = True
         current = self._read_params_from_ui()
         self.llm.send_prompt(
             prompt, current,
@@ -545,6 +634,7 @@ class LossyGUI:
             on_params=self._on_claude_params,
             on_done=self._on_claude_done,
             on_error=self._on_claude_error,
+            on_iterate=self._on_claude_iterate,
             metrics=self.rendered_metrics,
             source_metrics=getattr(self, 'source_metrics', None),
             spectrogram_png=getattr(self, 'rendered_spectrogram', None),
@@ -553,6 +643,9 @@ class LossyGUI:
 
     def _on_claude_text(self, text):
         self.ai_response.configure(state="normal")
+        if self._ai_needs_label:
+            self.ai_response.insert("end", "Claude: ", "asst_label")
+            self._ai_needs_label = False
         self.ai_response.insert("end", text)
         self.ai_response.see("end")
         self.ai_response.configure(state="disabled")
@@ -560,15 +653,43 @@ class LossyGUI:
 
     def _on_claude_params(self, merged_params):
         self._write_params_to_ui(merged_params)
+        self._pending_gen_notice = True
         self.ai_status_var.set("Applied params")
         self._on_play()
 
     def _on_claude_done(self):
+        self.ai_response.configure(state="normal")
+        self.ai_response.insert("end", "\n")
+        self.ai_response.configure(state="disabled")
         self.ai_ask_btn.configure(state="normal")
+        self.ai_stop_btn.configure(state="disabled")
 
     def _on_claude_error(self, error_msg):
         self.ai_status_var.set(f"Error: {error_msg[:80]}")
         self.ai_ask_btn.configure(state="normal")
+        self.ai_stop_btn.configure(state="disabled")
+
+    def _on_claude_iterate(self, merged_params):
+        """Claude requested iteration — render and play."""
+        self._write_params_to_ui(merged_params)
+        self._pending_gen_notice = True
+        self.ai_status_var.set(f"Tuning... iteration {self.llm._iterate_count}/{self.llm.MAX_ITERATE}")
+
+        def on_render_done():
+            self.llm.continue_iteration(
+                current_params=self._read_params_from_ui(),
+                metrics=self.rendered_metrics,
+                spectrogram_png=getattr(self, 'rendered_spectrogram', None),
+            )
+
+        sd.stop()
+        self._stop_cursor()
+        self._render_and_play(merged_params, on_complete=on_render_done,
+                              status_prefix="Tuning... iteration")
+
+    def _on_stop_tuning(self):
+        self.llm.stop_iterating()
+        self.ai_status_var.set("Stopping after current render...")
 
     def _on_ai_undo(self):
         prev = self.llm.undo()
@@ -863,15 +984,42 @@ class LossyGUI:
     # Waveform tab
     # ------------------------------------------------------------------
 
-    def _build_input_wave_page(self):
-        self.input_wave_canvas = tk.Canvas(self.input_wave_frame, bg="#111118", highlightthickness=0)
-        self.input_wave_canvas.pack(fill="both", expand=True)
+    def _build_waveforms_page(self):
+        """Combined input + output waveforms, stacked vertically."""
+        parent = self.waveforms_frame
+        ttk.Label(parent, text="Input", font=("Helvetica", 9, "bold"),
+                  foreground="#888").pack(anchor="w")
+        self.input_wave_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
+        self.input_wave_canvas.pack(fill="both", expand=True, pady=(0, 3))
         self.input_wave_canvas.bind("<Configure>", lambda e: self._draw_input_waveform())
+        self.input_wave_canvas.bind("<Button-1>", self._on_input_seek)
 
-    def _build_wave_page(self):
-        self.wave_canvas = tk.Canvas(self.wave_frame, bg="#111118", highlightthickness=0)
+        ttk.Label(parent, text="Output", font=("Helvetica", 9, "bold"),
+                  foreground="#888").pack(anchor="w")
+        self.wave_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
         self.wave_canvas.pack(fill="both", expand=True)
         self.wave_canvas.bind("<Configure>", lambda e: self._draw_waveform())
+        self.wave_canvas.bind("<Button-1>", self._on_output_seek)
+
+    def _build_spectrograms_page(self):
+        """Side-by-side input + output spectrograms drawn from audio data."""
+        parent = self.spectrograms_frame
+        self._spec_images = {}  # keep PhotoImage references to prevent GC
+        row = ttk.Frame(parent)
+        row.pack(fill="both", expand=True)
+        row.columnconfigure(0, weight=1)
+        row.columnconfigure(1, weight=1)
+        row.rowconfigure(0, weight=1)
+
+        self.spec_input_canvas = tk.Canvas(row, bg="#111118", highlightthickness=0)
+        self.spec_input_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        self.spec_output_canvas = tk.Canvas(row, bg="#111118", highlightthickness=0)
+        self.spec_output_canvas.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
+
+        self.spec_input_canvas.bind("<Configure>", lambda e: self._draw_spectrograms())
+        self.spec_output_canvas.bind("<Configure>", lambda e: self._draw_spectrograms())
+        self.spec_input_canvas.bind("<Button-1>", self._on_input_seek)
+        self.spec_output_canvas.bind("<Button-1>", self._on_output_seek)
 
     @staticmethod
     def _to_mono(audio):
@@ -886,6 +1034,13 @@ class LossyGUI:
     def _draw_waveform(self):
         _shared_draw_waveform(self.wave_canvas, self.rendered_audio, SR,
                               self.rendered_metrics, "Output", self.rendered_warning)
+
+    def _draw_spectrograms(self):
+        """Draw spectrograms computed from audio data."""
+        draw_spectrogram(self.spec_input_canvas, self.source_audio, SR,
+                         "Input", self._spec_images)
+        draw_spectrogram(self.spec_output_canvas, self.rendered_audio, SR,
+                         "Output", self._spec_images)
 
     # ------------------------------------------------------------------
     # Spectrum tab
@@ -1247,6 +1402,88 @@ class LossyGUI:
             return True
         return params != self.rendered_params
 
+    # ------------------------------------------------------------------
+    # Playback cursor & seek
+    # ------------------------------------------------------------------
+
+    def _output_canvases(self):
+        return [(self.wave_canvas, WAVE_PAD_LEFT, WAVE_PAD_RIGHT),
+                (self.spec_output_canvas, SPEC_PAD_LEFT, SPEC_PAD_RIGHT)]
+
+    def _input_canvases(self):
+        return [(self.input_wave_canvas, WAVE_PAD_LEFT, WAVE_PAD_RIGHT),
+                (self.spec_input_canvas, SPEC_PAD_LEFT, SPEC_PAD_RIGHT)]
+
+    def _start_cursor(self, audio, canvases):
+        self._stop_cursor()
+        self._playback_audio = audio
+        self._playback_start = time.time()
+        self._playback_length = len(audio) / SR
+        self._cursor_canvases = canvases
+        self._tick_cursor()
+
+    def _stop_cursor(self):
+        if self._cursor_timer is not None:
+            self.root.after_cancel(self._cursor_timer)
+            self._cursor_timer = None
+        for canvas, _, _ in self._cursor_canvases:
+            canvas.delete("cursor")
+        self._cursor_canvases = []
+        self._playback_audio = None
+        self._playback_start = None
+
+    def _tick_cursor(self):
+        if self._playback_start is None:
+            return
+        elapsed = time.time() - self._playback_start
+        if elapsed >= self._playback_length or elapsed < 0:
+            self._stop_cursor()
+            return
+        frac = elapsed / self._playback_length
+        for canvas, pl, pr in self._cursor_canvases:
+            canvas.delete("cursor")
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+            x = pl + frac * (w - pl - pr)
+            canvas.create_line(x, 0, x, h, fill="#ffffff",
+                               width=1, tags="cursor")
+        self._cursor_timer = self.root.after(40, self._tick_cursor)
+
+    def _on_output_seek(self, event):
+        if self.rendered_audio is None:
+            return
+        pl, pr = self._canvas_padding(event.widget)
+        self._seek_and_play(event, self.rendered_audio, pl, pr,
+                            self._output_canvases())
+        dur = len(self.rendered_audio) / SR
+        self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
+
+    def _on_input_seek(self, event):
+        if self.source_audio is None:
+            return
+        pl, pr = self._canvas_padding(event.widget)
+        self._seek_and_play(event, self.source_audio, pl, pr,
+                            self._input_canvases())
+        self.status_var.set("Playing dry...")
+
+    def _canvas_padding(self, widget):
+        if widget in (self.spec_input_canvas, self.spec_output_canvas):
+            return SPEC_PAD_LEFT, SPEC_PAD_RIGHT
+        return WAVE_PAD_LEFT, WAVE_PAD_RIGHT
+
+    def _seek_and_play(self, event, audio, pad_left, pad_right, canvases):
+        w = event.widget.winfo_width()
+        plot_w = w - pad_left - pad_right
+        if plot_w <= 0:
+            return
+        frac = max(0.0, min(1.0, (event.x - pad_left) / plot_w))
+        sample = int(frac * len(audio))
+        sd.stop()
+        sd.default.reset()
+        sd.play(audio[sample:], SR)
+        self._start_cursor(audio, canvases)
+        self._playback_start = time.time() - frac * self._playback_length
+
     def _on_play(self):
         if self.source_audio is None:
             self.status_var.set("No source audio loaded")
@@ -1259,21 +1496,97 @@ class LossyGUI:
         # Cache hit — just play
         if not self._params_changed(params):
             sd.stop()
+            self._stop_cursor()
             sd.default.reset()
             sd.play(self.rendered_audio, SR)
+            self._start_cursor(self.rendered_audio, self._output_canvases())
             dur = len(self.rendered_audio) / SR
             self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
             return
 
         self._render_and_play(params)
 
-    def _render_and_play(self, params):
+    # ------------------------------------------------------------------
+    # Generation history
+    # ------------------------------------------------------------------
+
+    def _save_generation(self):
+        """Save current render as a generation snapshot."""
+        if self.rendered_audio is None:
+            return
+        snap = {
+            'params': self.rendered_params.copy() if isinstance(self.rendered_params, dict) else self.rendered_params,
+            'audio': self.rendered_audio,
+            'metrics': self.rendered_metrics,
+            'warning': self.rendered_warning,
+            'spectrogram': getattr(self, 'rendered_spectrogram', None),
+        }
+        # Truncate forward history if we're not at the end
+        if self._gen_index < len(self._gen_history) - 1:
+            self._gen_history = self._gen_history[:self._gen_index + 1]
+        self._gen_history.append(snap)
+        if len(self._gen_history) > self._gen_max:
+            self._gen_history = self._gen_history[-self._gen_max:]
+        self._gen_index = len(self._gen_history) - 1
+        self._update_gen_buttons()
+        # Show notice in AI chat if triggered by Claude
+        if getattr(self, '_pending_gen_notice', False):
+            self._pending_gen_notice = False
+            gen = self._gen_index + 1
+            self.ai_response.configure(state="normal")
+            self.ai_response.insert("end", f"\n[Params applied → Gen {gen}]\n", "system_notice")
+            self.ai_response.see("end")
+            self.ai_response.configure(state="disabled")
+
+    def _update_gen_buttons(self):
+        """Update rewind/forward button state and generation label."""
+        total = len(self._gen_history)
+        if total == 0:
+            self._gen_label_var.set("Gen 0")
+            self._gen_back_btn.configure(state="disabled")
+            self._gen_fwd_btn.configure(state="disabled")
+        else:
+            self._gen_label_var.set(f"Gen {self._gen_index + 1}/{total}")
+            self._gen_back_btn.configure(state="normal" if self._gen_index > 0 else "disabled")
+            self._gen_fwd_btn.configure(state="normal" if self._gen_index < total - 1 else "disabled")
+
+    def _restore_generation(self, index):
+        """Restore a generation snapshot by index."""
+        snap = self._gen_history[index]
+        self._gen_index = index
+        self._write_params_to_ui(snap['params'])
+        self.rendered_audio = snap['audio']
+        self.rendered_params = snap['params']
+        self.rendered_metrics = snap['metrics']
+        self.rendered_warning = snap['warning']
+        self.rendered_spectrogram = snap.get('spectrogram')
+        self._play_rendered()
+        dur = len(snap['audio']) / SR
+        self.status_var.set(f"Gen {index + 1} — Playing ({dur:.1f}s){snap['warning']}")
+        self._draw_waveform()
+        self._draw_spectrograms()
+        self._draw_spectrum()
+        self._update_gen_buttons()
+
+    def _on_gen_back(self):
+        if self._gen_index > 0:
+            self._restore_generation(self._gen_index - 1)
+
+    def _on_gen_forward(self):
+        if self._gen_index < len(self._gen_history) - 1:
+            self._restore_generation(self._gen_index + 1)
+
+    def _render_and_play(self, params, on_complete=None, status_prefix=None):
         """Render full buffer in background, then play with sd.play()."""
         if self._autoplay_id is not None:
             self.root.after_cancel(self._autoplay_id)
             self._autoplay_id = None
+        self._stop_cursor()
         self.rendering = True
-        self.status_var.set("Rendering...")
+        if status_prefix:
+            self.status_var.set(f"{status_prefix} {self.llm._iterate_count}/{self.llm.MAX_ITERATE}")
+        else:
+            self.status_var.set("Rendering...")
 
         def do_render():
             try:
@@ -1303,11 +1616,23 @@ class LossyGUI:
                 self.rendered_warning = warning
                 self.rendered_params = params.copy()
                 dur = len(output) / SR
-                self.root.after(0, lambda: (
-                    self._play_rendered(),
-                    self.status_var.set(f"Playing ({dur:.1f}s){warning}"),
-                    self._draw_waveform(),
-                    self._draw_spectrum()))
+
+                def on_gui():
+                    self._save_generation()
+                    self._play_rendered()
+                    gen = self._gen_index + 1
+                    if status_prefix:
+                        self.status_var.set(
+                            f"Gen {gen} — {status_prefix} {self.llm._iterate_count}/{self.llm.MAX_ITERATE} complete")
+                    else:
+                        self.status_var.set(f"Gen {gen} — Playing ({dur:.1f}s){warning}")
+                    self._draw_waveform()
+                    self._draw_spectrograms()
+                    self._draw_spectrum()
+                    if on_complete:
+                        on_complete()
+
+                self.root.after(0, on_gui)
                 self.root.after(50, self._check_autoplay)
             except Exception as exc:
                 self.root.after(0, lambda: self.status_var.set(f"ERROR: {exc}"))
@@ -1320,12 +1645,14 @@ class LossyGUI:
         if self.rendered_audio is not None:
             sd.default.reset()
             sd.play(self.rendered_audio, SR)
+            self._start_cursor(self.rendered_audio, self._output_canvases())
             self.status_var.set("Playing...")
 
     def _on_play_dry(self):
         if self.source_audio is not None:
             sd.default.reset()
             sd.play(self.source_audio, SR)
+            self._start_cursor(self.source_audio, self._input_canvases())
             self.status_var.set("Playing dry...")
 
     def _on_stop(self):
@@ -1333,4 +1660,5 @@ class LossyGUI:
             self.root.after_cancel(self._autoplay_id)
             self._autoplay_id = None
         sd.stop()
+        self._stop_cursor()
         self.status_var.set("Stopped")

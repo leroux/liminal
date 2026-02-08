@@ -1,10 +1,17 @@
-"""Shared waveform drawing for both pedal GUIs.
+"""Shared waveform / spectrogram drawing for both pedal GUIs.
 
 Reverb-style visualization: dark background, filled envelope, RMS overlay,
 amplitude/time grids, channel labels, and metrics rows.
 """
 
 import numpy as np
+from PIL import Image, ImageTk
+
+# Layout constants shared with GUI cursor/seek code
+WAVE_PAD_LEFT = 50
+WAVE_PAD_RIGHT = 20
+SPEC_PAD_LEFT = 50
+SPEC_PAD_RIGHT = 10
 
 
 def draw_waveform(canvas, audio, sr, metrics=None, title_prefix="Output", warning=""):
@@ -34,8 +41,8 @@ def draw_waveform(canvas, audio, sr, metrics=None, title_prefix="Output", warnin
 
     pad_top = 35
     pad_bot = 88
-    pad_left = 50
-    pad_right = 20
+    pad_left = WAVE_PAD_LEFT
+    pad_right = WAVE_PAD_RIGHT
     plot_w = W - pad_left - pad_right
     plot_h = H - pad_top - pad_bot
 
@@ -221,3 +228,164 @@ def _draw_metrics(c, m, pad_left, stats_y, font):
         ]
         c.create_text(pad_left, row3_y, text="   ".join(items3),
                       fill="#cc88cc", font=font, anchor="w")
+
+
+# ---- Magma-inspired colormap (dark → purple → red → orange → yellow → white) ----
+
+_MAGMA_STOPS = np.array([
+    [0.001462, 0.000466, 0.013866],  # near-black
+    [0.100379, 0.033500, 0.220202],  # deep purple
+    [0.316654, 0.071690, 0.485380],  # purple
+    [0.535621, 0.136660, 0.437730],  # magenta
+    [0.762373, 0.233583, 0.299800],  # red-orange
+    [0.929644, 0.411479, 0.145367],  # orange
+    [0.993248, 0.665900, 0.198600],  # yellow
+    [0.987053, 0.991438, 0.749504],  # pale yellow-white
+], dtype=np.float64)
+
+
+def _magma_lut(n=256):
+    """Build an (n, 3) uint8 lookup table for the magma colormap."""
+    lut = np.zeros((n, 3), dtype=np.uint8)
+    stops = _MAGMA_STOPS
+    n_stops = len(stops)
+    for i in range(n):
+        t = i / (n - 1) * (n_stops - 1)
+        idx = min(int(t), n_stops - 2)
+        frac = t - idx
+        rgb = stops[idx] * (1 - frac) + stops[idx + 1] * frac
+        lut[i] = np.clip(rgb * 255, 0, 255).astype(np.uint8)
+    return lut
+
+_MAGMA_LUT = _magma_lut()
+
+
+def draw_spectrogram(canvas, audio, sr, title_prefix="Output", image_refs=None):
+    """Draw a spectrogram with axes and labels matching the waveform style.
+
+    Args:
+        canvas: tk.Canvas to draw on.
+        audio: numpy array — mono (N,) or stereo (N,2). None shows placeholder.
+        sr: Sample rate.
+        title_prefix: "Output" or "Input" for title bar.
+        image_refs: dict to store PhotoImage references (prevents GC).
+    """
+    c = canvas
+    c.delete("all")
+    c.update_idletasks()
+    W = c.winfo_width() or 600
+    H = c.winfo_height() or 400
+
+    TITLE_COL = "#e0e0e0"
+    GRID_COL = "#444466"
+    LABEL_COL = "#666688"
+    F_TITLE = ("Helvetica", 11, "bold")
+    F_LABEL = ("Helvetica", 9)
+
+    pad_top = 30
+    pad_bot = 28
+    pad_left = SPEC_PAD_LEFT
+    pad_right = SPEC_PAD_RIGHT
+    plot_w = W - pad_left - pad_right
+    plot_h = H - pad_top - pad_bot
+
+    if plot_w < 30 or plot_h < 20:
+        return
+
+    if audio is None:
+        c.create_text(W // 2, H // 2,
+                      text=f"No {title_prefix.lower()} audio",
+                      fill=LABEL_COL, font=F_TITLE)
+        return
+
+    # To mono
+    mono = np.asarray(audio, dtype=np.float64)
+    if mono.ndim == 2:
+        mono = mono.mean(axis=1)
+    n_samples = len(mono)
+    duration = n_samples / sr
+
+    if n_samples < 2048:
+        c.create_text(W // 2, H // 2, text="Audio too short",
+                      fill=LABEL_COL, font=F_TITLE)
+        return
+
+    # --- STFT ---
+    nfft = 2048
+    hop = nfft // 4
+    max_freq = min(sr / 2, 16000)
+    max_bin = int(max_freq / (sr / nfft))
+    window = np.hanning(nfft)
+
+    n_frames = max(1, (n_samples - nfft) // hop + 1)
+    # Limit frames to plot width for efficiency
+    frame_step = max(1, n_frames // plot_w)
+    frames_used = n_frames // frame_step
+
+    spec = np.zeros((max_bin, frames_used), dtype=np.float64)
+    for i in range(frames_used):
+        start = (i * frame_step) * hop
+        end = start + nfft
+        if end > n_samples:
+            break
+        chunk = mono[start:end] * window
+        fft_mag = np.abs(np.fft.rfft(chunk))[:max_bin]
+        fft_mag[fft_mag < 1e-12] = 1e-12
+        spec[:, i] = 20.0 * np.log10(fft_mag)
+
+    # Normalize dB to 0-1 range
+    db_floor = -90.0
+    db_max = float(np.max(spec)) + 3.0
+    spec_norm = np.clip((spec - db_floor) / (db_max - db_floor), 0.0, 1.0)
+
+    # Map to colormap — spec_norm is (freq_bins, time_frames), flip freq axis
+    spec_flipped = spec_norm[::-1, :]  # low freq at bottom
+    indices = np.clip((spec_flipped * 255).astype(np.int32), 0, 255)
+    rgb = _MAGMA_LUT[indices]  # (freq_bins, time_frames, 3)
+
+    # Resize to plot area using PIL
+    img = Image.fromarray(rgb.astype(np.uint8), mode="RGB")
+    img = img.resize((plot_w, plot_h), Image.NEAREST)
+    tk_img = ImageTk.PhotoImage(img)
+    if image_refs is not None:
+        image_refs[title_prefix] = tk_img
+
+    # --- Draw ---
+    # Plot background
+    c.create_rectangle(pad_left, pad_top, pad_left + plot_w, pad_top + plot_h,
+                       fill="#0a0a14", outline="")
+
+    # Spectrogram image
+    c.create_image(pad_left, pad_top, anchor="nw", image=tk_img)
+
+    # Title
+    c.create_text(W // 2, 14,
+                  text=f"{title_prefix} Spectrogram — {duration:.1f}s",
+                  fill=TITLE_COL, font=F_TITLE)
+
+    # Frequency axis labels (left side)
+    freq_ticks = [v for v in [100, 500, 1000, 2000, 4000, 8000, 16000]
+                  if v <= max_freq]
+    for f in freq_ticks:
+        frac = f / max_freq
+        y = pad_top + plot_h * (1.0 - frac)
+        label = f"{f // 1000}k" if f >= 1000 else str(f)
+        c.create_text(pad_left - 5, y, text=label,
+                      fill=LABEL_COL, font=F_LABEL, anchor="e")
+        c.create_line(pad_left, y, pad_left + plot_w, y,
+                      fill=GRID_COL, dash=(2, 4))
+
+    # Time axis labels (bottom)
+    time_step = max(0.5, round(duration / 6, 1))
+    t = 0.0
+    while t <= duration:
+        x = pad_left + (t / duration) * plot_w
+        c.create_text(x, pad_top + plot_h + 12, text=f"{t:.1f}s",
+                      fill=LABEL_COL, font=F_LABEL)
+        c.create_line(x, pad_top, x, pad_top + plot_h,
+                      fill=GRID_COL, dash=(2, 4))
+        t += time_step
+
+    # Border
+    c.create_rectangle(pad_left, pad_top, pad_left + plot_w, pad_top + plot_h,
+                       outline="#333355")

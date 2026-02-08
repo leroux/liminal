@@ -46,6 +46,10 @@ class LLMTuner:
         self._busy = False
         self._prev_metrics = None   # last output metrics (for A/B delta)
         self._source_sent = False   # whether source info has been sent this session
+        self._iterate_count = 0
+        self._stop_iterating = False
+        self._callbacks = None      # stored during iteration chain
+        self.MAX_ITERATE = 5
 
         # Async event loop in a background daemon thread
         self._loop = asyncio.new_event_loop()
@@ -68,6 +72,16 @@ RULES:
 - For per-node parameters (arrays of 8), always provide all 8 values.
 - For integer choice params (mode, waveform, etc), use the integer value.
 - Include a brief text explanation of what you're changing and why.
+
+AUTONOMOUS TUNING:
+- To iterate silently (render + check metrics without the user listening), include
+  "_iterate": true in your JSON block alongside the parameters.
+- You have up to 5 silent iterations per user request. Use them to converge before
+  presenting the result.
+- When satisfied (or on final iteration), omit "_iterate" — the system will play
+  for the user to hear.
+- Each iteration renders in 1-2 seconds. Make meaningful changes each round.
+- Always explain your reasoning in text, even during silent iterations.
 """
 
     def _build_options(self):
@@ -77,17 +91,20 @@ RULES:
             system_prompt=self._build_system_prompt(),
             max_turns=None,
             allowed_tools=["Read"],
+            include_partial_messages=True,
         )
 
     def send_prompt(self, user_text, current_params, on_text, on_params, on_done, on_error,
                     metrics=None, source_metrics=None,
-                    spectrogram_png=None, source_spectrogram_png=None):
+                    spectrogram_png=None, source_spectrogram_png=None,
+                    on_iterate=None):
         """Non-blocking. Runs async SDK call in background thread.
 
         on_text(text)              — streamed assistant text, called on tkinter main thread
         on_params(merged)          — called when structured output arrives (params applied)
         on_done()                  — called when response is complete
         on_error(error_msg)        — called on error
+        on_iterate(merged)         — called when Claude wants silent iteration (render + metrics)
         metrics                    — optional output metrics dict from analyze()
         source_metrics             — optional input/source audio metrics dict
         spectrogram_png            — optional output spectrogram PNG bytes
@@ -98,6 +115,13 @@ RULES:
             return
         self._busy = True
         self._undo_params = current_params.copy()
+        self._callbacks = {
+            'on_text': on_text, 'on_params': on_params,
+            'on_done': on_done, 'on_error': on_error,
+            'on_iterate': on_iterate,
+        }
+        self._iterate_count = 0
+        self._stop_iterating = False
         asyncio.run_coroutine_threadsafe(
             self._async_send(user_text, current_params, on_text, on_params, on_done, on_error,
                              metrics=metrics, source_metrics=source_metrics,
@@ -108,25 +132,89 @@ RULES:
 
     @staticmethod
     def _extract_json_block(text):
-        """Extract a JSON object from a ```json code block, if present."""
+        """Extract a JSON object from a ```json code block, if present.
+
+        Returns (dict | None, bool) — the params dict and whether _iterate was set.
+        """
         m = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
         if m:
             try:
-                return json.loads(m.group(1))
+                obj = json.loads(m.group(1))
+                iterate = obj.pop("_iterate", False)
+                return obj, bool(iterate)
             except json.JSONDecodeError:
                 pass
-        return None
+        return None, False
 
     @staticmethod
     def _strip_json_block(text):
         """Remove ```json code blocks from text for display."""
         return re.sub(r"```json\s*\n.*?```\n?", "", text, flags=re.DOTALL).strip()
 
+    async def _process_response(self, current_params):
+        """Process Claude response. Handles iteration or final param delivery.
+
+        Must consume ALL messages (including ResultMessage) before returning,
+        otherwise the SDK client won't accept a new query().
+
+        With include_partial_messages=True, we receive StreamEvent objects
+        for token-by-token text, plus complete AssistantMessage objects for
+        param extraction.
+        """
+        from claude_agent_sdk import AssistantMessage
+        from claude_agent_sdk.types import StreamEvent
+
+        cb = self._callbacks
+        iterate_params = None  # set if Claude requested silent iteration
+        streamed = False       # whether we streamed any text for this message
+
+        async for msg in self._client.receive_response():
+            log.debug("LLM msg: %s %r", type(msg).__name__,
+                      vars(msg) if hasattr(msg, '__dict__') else msg)
+
+            if isinstance(msg, StreamEvent):
+                event = msg.event
+                if event.get("type") == "content_block_delta":
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        if text:
+                            self._root.after(0, cb['on_text'], text)
+                            streamed = True
+
+            elif isinstance(msg, AssistantMessage):
+                for block in (msg.content or []):
+                    if hasattr(block, 'text') and block.text:
+                        raw_params, iterate = self._extract_json_block(block.text)
+                        # Only display text if we didn't already stream it
+                        if not streamed:
+                            display_text = self._strip_json_block(block.text) if raw_params else block.text
+                            if display_text:
+                                self._root.after(0, cb['on_text'], display_text)
+                        if raw_params:
+                            validated = self._validate_and_clamp(raw_params)
+                            merged = current_params.copy()
+                            merged.update(validated)
+
+                            if (iterate and cb['on_iterate']
+                                    and self._iterate_count < self.MAX_ITERATE
+                                    and not self._stop_iterating):
+                                self._iterate_count += 1
+                                iterate_params = merged
+                            else:
+                                self._root.after(0, cb['on_params'], merged)
+                streamed = False  # reset for next message in multi-turn
+
+        # Stream fully consumed — now dispatch
+        if iterate_params is not None:
+            self._root.after(0, cb['on_iterate'], iterate_params)
+        else:
+            self._busy = False
+            self._root.after(0, cb['on_done'])
+
     async def _async_send(self, user_text, current_params, on_text, on_params, on_done, on_error,
                           metrics=None, source_metrics=None,
                           spectrogram_png=None, source_spectrogram_png=None):
-        from claude_agent_sdk import ResultMessage, AssistantMessage
-
         try:
             if self._client is None:
                 from claude_agent_sdk import ClaudeSDKClient
@@ -174,30 +262,52 @@ RULES:
 
             log.debug("LLM prompt:\n%s", full_prompt)
             await self._client.query(full_prompt)
-
-            async for msg in self._client.receive_response():
-                log.debug("LLM msg: %s %r", type(msg).__name__, vars(msg) if hasattr(msg, '__dict__') else msg)
-
-                if isinstance(msg, AssistantMessage):
-                    for block in (msg.content or []):
-                        if hasattr(block, 'text') and block.text:
-                            raw_params = self._extract_json_block(block.text)
-                            display_text = self._strip_json_block(block.text) if raw_params else block.text
-                            if display_text:
-                                self._root.after(0, on_text, display_text)
-                            if raw_params:
-                                validated = self._validate_and_clamp(raw_params)
-                                merged = current_params.copy()
-                                merged.update(validated)
-                                self._root.after(0, on_params, merged)
-
-            self._busy = False
-            self._root.after(0, on_done)
+            await self._process_response(current_params)
 
         except Exception as e:
             traceback.print_exc()
             self._busy = False
             self._root.after(0, on_error, str(e))
+
+    def continue_iteration(self, current_params, metrics, spectrogram_png=None):
+        """Called by GUI after silent render. Sends metrics back to Claude."""
+        asyncio.run_coroutine_threadsafe(
+            self._async_continue(current_params, metrics, spectrogram_png),
+            self._loop,
+        )
+
+    async def _async_continue(self, current_params, metrics, spectrogram_png):
+        try:
+            from shared.audio_features import format_features
+            features_text = format_features(metrics, self._prev_metrics)
+            self._prev_metrics = metrics
+
+            prompt = f"[Iteration {self._iterate_count}/{self.MAX_ITERATE}] Render complete.\n\n{features_text}"
+
+            # Spectrogram file
+            if spectrogram_png:
+                spec_dir = os.path.join(os.getcwd(), ".tmp_spectrograms")
+                os.makedirs(spec_dir, exist_ok=True)
+                out_path = os.path.join(spec_dir, "output.png")
+                with open(out_path, "wb") as f:
+                    f.write(spectrogram_png)
+                prompt += f"\n\nUpdated output spectrogram: {out_path}"
+
+            if self._iterate_count >= self.MAX_ITERATE:
+                prompt += "\n\n[Max iterations reached — do NOT include _iterate.]"
+
+            await self._client.query(prompt)
+            await self._process_response(current_params)
+        except Exception as e:
+            traceback.print_exc()
+            self._busy = False
+            cb = self._callbacks
+            if cb:
+                self._root.after(0, cb['on_error'], str(e))
+
+    def stop_iterating(self):
+        """Stop iteration chain after current render completes."""
+        self._stop_iterating = True
 
     def _validate_and_clamp(self, raw):
         """Validate keys, clamp values to PARAM_RANGES, fix array lengths."""
