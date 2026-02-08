@@ -7,6 +7,8 @@ on:
       - "rust/**"
       - "lossy/gui/presets/**"
       - ".github/workflows/build-plugin.yml"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -63,3 +65,36 @@ jobs:
           path: |
             rust/target/bundled/lossy-plugin.vst3
             rust/target/bundled/lossy-plugin.clap
+
+      - name: Package for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          cd target/bundled
+          tar czf lossy-plugin-${{ matrix.name }}.tar.gz lossy-plugin.vst3 lossy-plugin.clap
+
+      - name: Upload release archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: rust/target/bundled/lossy-plugin-${{ matrix.name }}.tar.gz
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: "*.tar.gz"
