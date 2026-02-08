@@ -5,13 +5,20 @@ with its own guide text, param ranges, and default_params function.
 """
 
 import asyncio
+import base64
 import json
 import logging
+import os
 import re
 import threading
 import traceback
 
 log = logging.getLogger(__name__)
+
+
+def _bytes_to_base64(data):
+    """Encode raw bytes to base64 string for API image blocks."""
+    return base64.b64encode(data).decode("ascii")
 
 
 class LLMTuner:
@@ -37,6 +44,8 @@ class LLMTuner:
         self._undo_params = None
         self._client = None
         self._busy = False
+        self._prev_metrics = None   # last output metrics (for A/B delta)
+        self._source_sent = False   # whether source info has been sent this session
 
         # Async event loop in a background daemon thread
         self._loop = asyncio.new_event_loop()
@@ -67,16 +76,22 @@ RULES:
             model="claude-opus-4-6",
             system_prompt=self._build_system_prompt(),
             max_turns=None,
-            allowed_tools=[],
+            allowed_tools=["Read"],
         )
 
-    def send_prompt(self, user_text, current_params, on_text, on_params, on_done, on_error):
+    def send_prompt(self, user_text, current_params, on_text, on_params, on_done, on_error,
+                    metrics=None, source_metrics=None,
+                    spectrogram_png=None, source_spectrogram_png=None):
         """Non-blocking. Runs async SDK call in background thread.
 
-        on_text(text)          — streamed assistant text, called on tkinter main thread
-        on_params(merged)      — called when structured output arrives (params applied)
-        on_done()              — called when response is complete
-        on_error(error_msg)    — called on error
+        on_text(text)              — streamed assistant text, called on tkinter main thread
+        on_params(merged)          — called when structured output arrives (params applied)
+        on_done()                  — called when response is complete
+        on_error(error_msg)        — called on error
+        metrics                    — optional output metrics dict from analyze()
+        source_metrics             — optional input/source audio metrics dict
+        spectrogram_png            — optional output spectrogram PNG bytes
+        source_spectrogram_png     — optional source spectrogram PNG bytes
         """
         if self._busy:
             self._root.after(0, on_error, "Already processing a request")
@@ -84,7 +99,10 @@ RULES:
         self._busy = True
         self._undo_params = current_params.copy()
         asyncio.run_coroutine_threadsafe(
-            self._async_send(user_text, current_params, on_text, on_params, on_done, on_error),
+            self._async_send(user_text, current_params, on_text, on_params, on_done, on_error,
+                             metrics=metrics, source_metrics=source_metrics,
+                             spectrogram_png=spectrogram_png,
+                             source_spectrogram_png=source_spectrogram_png),
             self._loop,
         )
 
@@ -104,7 +122,9 @@ RULES:
         """Remove ```json code blocks from text for display."""
         return re.sub(r"```json\s*\n.*?```\n?", "", text, flags=re.DOTALL).strip()
 
-    async def _async_send(self, user_text, current_params, on_text, on_params, on_done, on_error):
+    async def _async_send(self, user_text, current_params, on_text, on_params, on_done, on_error,
+                          metrics=None, source_metrics=None,
+                          spectrogram_png=None, source_spectrogram_png=None):
         from claude_agent_sdk import ResultMessage, AssistantMessage
 
         try:
@@ -113,10 +133,45 @@ RULES:
                 self._client = ClaudeSDKClient(options=self._build_options())
                 await self._client.connect()
 
+            # Build text prompt
             full_prompt = (
                 f"Current parameters:\n{json.dumps(current_params, indent=2)}"
                 f"\n\nUser request: {user_text}"
             )
+
+            # Formatted audio metrics with A/B delta and dedup
+            if metrics is not None:
+                from shared.audio_features import format_features
+                src = source_metrics if not self._source_sent else None
+                features_text = format_features(metrics, self._prev_metrics, src)
+                if features_text:
+                    full_prompt += f"\n\n{features_text}"
+                self._prev_metrics = metrics
+
+            # Write spectrograms to tmp files so Claude can Read them
+            spec_dir = os.path.join(os.getcwd(), ".tmp_spectrograms")
+            os.makedirs(spec_dir, exist_ok=True)
+
+            if not self._source_sent and source_spectrogram_png:
+                src_path = os.path.join(spec_dir, "input.png")
+                with open(src_path, "wb") as f:
+                    f.write(source_spectrogram_png)
+                full_prompt += (
+                    f"\n\nInput audio spectrogram saved at: {src_path}"
+                    f"\nUse the Read tool to view it."
+                )
+
+            if spectrogram_png:
+                out_path = os.path.join(spec_dir, "output.png")
+                with open(out_path, "wb") as f:
+                    f.write(spectrogram_png)
+                full_prompt += (
+                    f"\n\nOutput audio spectrogram saved at: {out_path}"
+                    f"\nUse the Read tool to view it."
+                )
+
+            self._source_sent = True
+
             log.debug("LLM prompt:\n%s", full_prompt)
             await self._client.query(full_prompt)
 
@@ -209,6 +264,8 @@ RULES:
 
     def reset_session(self):
         """Disconnect current client. Next send_prompt creates a fresh session."""
+        self._prev_metrics = None
+        self._source_sent = False
         if self._client is not None:
             asyncio.run_coroutine_threadsafe(
                 self._async_disconnect(), self._loop
