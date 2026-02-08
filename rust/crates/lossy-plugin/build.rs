@@ -20,10 +20,12 @@ fn main() {
         for entry in files {
             let path = entry.path().canonicalize().unwrap();
             let name = entry.path().file_stem().unwrap().to_str().unwrap().to_string();
+            // Use forward slashes for include_str! — backslashes from Windows
+            // canonicalize() (e.g. \\?\D:\...) are treated as escape sequences.
+            let path_str = path.to_str().unwrap().replace('\\', "/");
             code.push_str(&format!(
                 "    (\"{}\", include_str!(\"{}\")),\n",
-                name,
-                path.display()
+                name, path_str
             ));
         }
     }
