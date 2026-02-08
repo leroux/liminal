@@ -1,0 +1,8 @@
+[package]
+name = "shared-dsp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rosc.workspace = true
+hound.workspace = true

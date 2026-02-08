@@ -11,3 +11,9 @@ wheels/
 
 # Temp spectrograms for LLM tuner
 .tmp_spectrograms/
+
+# Rust build artifacts
+rust/target/
+
+# Audio files
+*.wav
