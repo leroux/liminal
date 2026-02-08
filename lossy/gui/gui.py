@@ -38,6 +38,7 @@ from lossy.engine.lossy import render_lossy
 from shared.llm_guide_text import LOSSY_GUIDE, LOSSY_PARAM_DESCRIPTIONS
 from shared.llm_tuner import LLMTuner
 from shared.streaming import safety_check, normalize_output
+from shared.waveform import draw_waveform as _shared_draw_waveform
 
 PRESET_DIR = os.path.join(os.path.dirname(__file__), "presets")
 DEFAULT_SOURCE = os.path.join(
@@ -59,6 +60,7 @@ class LossyGUI:
         self.rendered_audio = None
         self.rendered_params = None
         self.rendered_warning = ""
+        self.rendered_metrics = None
         self.rendering = False
         self.sliders = {}
         self.locks = {}
@@ -91,6 +93,7 @@ class LossyGUI:
     def _load_wav(self, path):
         if not os.path.isfile(path):
             self.source_audio = self._make_impulse()
+            self._analyze_source()
             return
         sr, data = wavfile.read(path)
         if data.dtype == np.int16:
@@ -107,6 +110,16 @@ class LossyGUI:
             audio = resample_poly(audio, SR // g, sr // g, axis=0)
         # Keep stereo as (samples, 2) — don't downmix
         self.source_audio = audio
+        self._analyze_source()
+
+    def _analyze_source(self):
+        """Compute source audio metrics and spectrogram for LLM context."""
+        from shared.analysis import analyze
+        from shared.audio_features import generate_spectrogram_png
+        self.source_metrics = analyze(self.source_audio, SR)
+        self.source_spectrogram = generate_spectrogram_png(self.source_audio, SR)
+        if hasattr(self, 'llm'):
+            self.llm.reset_session()
 
     @staticmethod
     def _make_impulse(seconds=2.0):
@@ -142,18 +155,21 @@ class LossyGUI:
 
         self.params_frame = ttk.Frame(nb)
         self.presets_frame = ttk.Frame(nb)
+        self.input_wave_frame = ttk.Frame(nb)
         self.wave_frame = ttk.Frame(nb)
         self.spec_frame = ttk.Frame(nb)
         self.guide_frame = ttk.Frame(nb)
 
         nb.add(self.params_frame, text="Parameters")
         nb.add(self.presets_frame, text="Presets")
-        nb.add(self.wave_frame, text="Waveform")
+        nb.add(self.input_wave_frame, text="Input Waveform")
+        nb.add(self.wave_frame, text="Output Waveform")
         nb.add(self.spec_frame, text="Spectrum")
         nb.add(self.guide_frame, text="Guide")
 
         self._build_params_page()
         self._build_presets_page()
+        self._build_input_wave_page()
         self._build_wave_page()
         self._build_spec_page()
         self._build_guide_page()
@@ -529,6 +545,10 @@ class LossyGUI:
             on_params=self._on_claude_params,
             on_done=self._on_claude_done,
             on_error=self._on_claude_error,
+            metrics=self.rendered_metrics,
+            source_metrics=getattr(self, 'source_metrics', None),
+            spectrogram_png=getattr(self, 'rendered_spectrogram', None),
+            source_spectrogram_png=getattr(self, 'source_spectrogram', None),
         )
 
     def _on_claude_text(self, text):
@@ -843,8 +863,13 @@ class LossyGUI:
     # Waveform tab
     # ------------------------------------------------------------------
 
+    def _build_input_wave_page(self):
+        self.input_wave_canvas = tk.Canvas(self.input_wave_frame, bg="#111118", highlightthickness=0)
+        self.input_wave_canvas.pack(fill="both", expand=True)
+        self.input_wave_canvas.bind("<Configure>", lambda e: self._draw_input_waveform())
+
     def _build_wave_page(self):
-        self.wave_canvas = tk.Canvas(self.wave_frame, bg="#1a1a2e", highlightthickness=0)
+        self.wave_canvas = tk.Canvas(self.wave_frame, bg="#111118", highlightthickness=0)
         self.wave_canvas.pack(fill="both", expand=True)
         self.wave_canvas.bind("<Configure>", lambda e: self._draw_waveform())
 
@@ -854,57 +879,13 @@ class LossyGUI:
             return audio.mean(axis=1)
         return audio
 
+    def _draw_input_waveform(self):
+        _shared_draw_waveform(self.input_wave_canvas, self.source_audio, SR,
+                              getattr(self, 'source_metrics', None), "Input")
+
     def _draw_waveform(self):
-        c = self.wave_canvas
-        c.delete("all")
-        w = c.winfo_width()
-        h = c.winfo_height()
-        if w < 10 or h < 10:
-            return
-
-        audio = self.rendered_audio
-        if audio is None:
-            mid = h // 2
-            c.create_line(0, mid, w, mid, fill="#333355")
-            c.create_text(w // 2, mid, text="No render yet", fill="#666688", font=("Helvetica", 14))
-            return
-
-        stereo = audio.ndim == 2
-        n = audio.shape[0] if stereo else len(audio)
-        samples_per_px = max(1, n // w)
-
-        if stereo:
-            # Draw L and R in separate halves
-            channels = [(audio[:, 0], "#4488ff", 0, h // 2),
-                        (audio[:, 1], "#ff6644", h // 2, h)]
-        else:
-            channels = [(audio, "#4488ff", 0, h)]
-
-        for ch_audio, color, y0, y1 in channels:
-            ch_h = y1 - y0
-            mid = y0 + ch_h // 2
-            c.create_line(0, mid, w, mid, fill="#333355")
-            for x in range(w):
-                i0 = x * samples_per_px
-                i1 = min(i0 + samples_per_px, n)
-                if i0 >= n:
-                    break
-                chunk = ch_audio[i0:i1]
-                lo_val = np.min(chunk)
-                hi_val = np.max(chunk)
-                y_lo = int(mid - lo_val * ch_h // 2 * 0.9)
-                y_hi = int(mid - hi_val * ch_h // 2 * 0.9)
-                c.create_line(x, y_lo, x, y_hi, fill=color)
-
-        if stereo:
-            c.create_text(8, 4, anchor="nw", fill="#4488ff", text="L")
-            c.create_text(8, h // 2 + 4, anchor="nw", fill="#ff6644", text="R")
-
-        peak = np.max(np.abs(audio))
-        rms = np.sqrt(np.mean(audio ** 2))
-        ch_label = "Stereo" if stereo else "Mono"
-        c.create_text(w - 8, 12, anchor="ne", fill="#aaaacc",
-                       text=f"{ch_label}  Peak: {peak:.3f}  RMS: {rms:.3f}  Samples: {n}")
+        _shared_draw_waveform(self.wave_canvas, self.rendered_audio, SR,
+                              self.rendered_metrics, "Output", self.rendered_warning)
 
     # ------------------------------------------------------------------
     # Spectrum tab
@@ -1245,6 +1226,7 @@ class LossyGUI:
             self._load_wav(path)
             self.rendered_audio = None
             self.status_var.set(f"Loaded: {os.path.basename(path)}")
+            self._draw_input_waveform()
 
     def _on_save(self):
         if self.rendered_audio is None:
@@ -1313,6 +1295,10 @@ class LossyGUI:
 
                 output, warning = normalize_output(output)
 
+                from shared.analysis import analyze
+                from shared.audio_features import generate_spectrogram_png
+                self.rendered_metrics = analyze(output, SR, reference=self.source_audio)
+                self.rendered_spectrogram = generate_spectrogram_png(output, SR)
                 self.rendered_audio = output
                 self.rendered_warning = warning
                 self.rendered_params = params.copy()
