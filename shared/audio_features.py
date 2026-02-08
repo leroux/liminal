@@ -17,7 +17,7 @@ def format_features(metrics, prev_metrics=None, source_metrics=None):
     Returns:
         Formatted string for inclusion in LLM prompt.
     """
-    if not metrics:
+    if not metrics and not source_metrics:
         return ""
 
     parts = []
@@ -27,15 +27,16 @@ def format_features(metrics, prev_metrics=None, source_metrics=None):
         parts.append(_format_source(source_metrics))
         parts.append("")
 
-    parts.append("OUTPUT AUDIO (current render):")
-    parts.append(_format_output(metrics))
+    if metrics:
+        parts.append("OUTPUT AUDIO (current render):")
+        parts.append(_format_output(metrics))
 
-    if prev_metrics:
-        delta = _format_delta(prev_metrics, metrics)
-        if delta:
-            parts.append("")
-            parts.append("CHANGES FROM PREVIOUS RENDER:")
-            parts.append(delta)
+        if prev_metrics:
+            delta = _format_delta(prev_metrics, metrics)
+            if delta:
+                parts.append("")
+                parts.append("CHANGES FROM PREVIOUS RENDER:")
+                parts.append(delta)
 
     return "\n".join(parts)
 
@@ -43,22 +44,38 @@ def format_features(metrics, prev_metrics=None, source_metrics=None):
 def _format_source(m):
     """Format source/input audio metrics."""
     lines = []
+    if m.get("rms_db") is not None:
+        lines.append(f"  RMS level: {m['rms_db']:.1f} dB")
+    if m.get("peak_db") is not None:
+        lines.append(f"  Peak level: {m['peak_db']:.1f} dB")
+    if m.get("rt60") is not None:
+        lines.append(f"  RT60: {m['rt60']:.3f}s")
+    if m.get("edt") is not None:
+        lines.append(f"  EDT: {m['edt']:.3f}s")
     if m.get("spectral_centroid") is not None:
         lines.append(f"  Spectral centroid: {m['spectral_centroid']:.0f} Hz")
-    if m.get("crest_factor") is not None:
-        lines.append(f"  Crest factor: {m['crest_factor']:.1f} dB")
-    if m.get("bandwidth") is not None:
-        lines.append(f"  Bandwidth: {m['bandwidth']:.0f} Hz")
-    if m.get("spectral_flatness") is not None:
-        lines.append(f"  Spectral flatness: {m['spectral_flatness']:.3f}")
     if m.get("echo_density") is not None:
         lines.append(f"  Echo density: {m['echo_density']:.2f}")
+    if m.get("crest_factor") is not None:
+        lines.append(f"  Crest factor: {m['crest_factor']:.1f} dB")
+    if m.get("c50") is not None:
+        lines.append(f"  C50: {m['c50']:.1f} dB")
+    if m.get("c80") is not None:
+        lines.append(f"  C80: {m['c80']:.1f} dB")
+    if m.get("spectral_flatness") is not None:
+        lines.append(f"  Spectral flatness: {m['spectral_flatness']:.3f}")
+    if m.get("bandwidth") is not None:
+        lines.append(f"  Bandwidth: {m['bandwidth']:.0f} Hz")
     return "\n".join(lines)
 
 
 def _format_output(m):
     """Format output audio metrics with units."""
     lines = []
+    if m.get("rms_db") is not None:
+        lines.append(f"  RMS level: {m['rms_db']:.1f} dB")
+    if m.get("peak_db") is not None:
+        lines.append(f"  Peak level: {m['peak_db']:.1f} dB")
     if m.get("rt60") is not None:
         lines.append(f"  RT60: {m['rt60']:.3f}s")
     if m.get("edt") is not None:
