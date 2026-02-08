@@ -8,9 +8,6 @@ SR = 44100
 # Legacy speed→window_size mapping (for preset backward compat)
 _LEGACY_WINDOW_SIZES = [4096, 2048, 1024, 512, 256]
 
-# Mode names
-MODE_NAMES = ["Standard", "Inverse", "Jitter"]
-
 # Quantizer type names
 QUANTIZER_NAMES = ["Uniform", "Compand"]
 
@@ -38,7 +35,8 @@ BOUNCE_TARGET_NAMES = ["Loss", "Window", "Crush", "Decimate", "Verb", "Filter Fr
 def default_params():
     return {
         # --- Spectral loss ---
-        "mode": 0,              # 0=standard, 1=inverse, 2=jitter
+        "inverse": 0,           # 0=standard, 1=hear residual (everything standard discards)
+        "jitter": 0.0,          # random phase perturbation amount 0.0-1.0
         "loss": 0.5,            # 0.0 (clean) to 1.0 (destroyed)
         "window_size": 2048,    # FFT window size in samples (64-16384)
         "hop_divisor": 4,       # hop = window_size / hop_divisor (1-8, 4=75% overlap)
@@ -104,7 +102,7 @@ def default_params():
 def bypass_params():
     """All params at their no-effect / clean position."""
     return {
-        "mode": 0, "loss": 0.0, "window_size": 2048, "hop_divisor": 4,
+        "inverse": 0, "jitter": 0.0, "loss": 0.0, "window_size": 2048, "hop_divisor": 4,
         "n_bands": 21, "global_amount": 1.0,
         "phase_loss": 0.0, "quantizer": 0, "pre_echo": 0.0,
         "noise_shape": 0.0, "weighting": 1.0,
@@ -125,7 +123,8 @@ def bypass_params():
 
 
 def migrate_legacy_params(params):
-    """Convert legacy preset with 'speed' to 'window_size'."""
+    """Convert legacy preset keys to current schema."""
+    # Legacy speed → window_size
     if "speed" in params and "window_size" not in params:
         speed = float(params.pop("speed"))
         sizes = _LEGACY_WINDOW_SIZES
@@ -133,10 +132,20 @@ def migrate_legacy_params(params):
         params["window_size"] = sizes[idx]
     elif "speed" in params:
         params.pop("speed")
+    # Legacy mode → inverse + jitter
+    if "mode" in params:
+        mode = int(params.pop("mode"))
+        if mode == 1:
+            params.setdefault("inverse", 1)
+        elif mode == 2:
+            # Old jitter mode used loss to control jitter amount
+            params.setdefault("jitter", params.get("loss", 0.5))
+            params["loss"] = 0.0
     return params
 
 
 PARAM_RANGES = {
+    "jitter":          (0.0, 1.0),
     "loss":            (0.0, 1.0),
     "window_size":     (64, 16384),
     "hop_divisor":     (1, 8),
@@ -170,7 +179,7 @@ PARAM_RANGES = {
 
 # Section groupings for lock feature
 PARAM_SECTIONS = {
-    "spectral": ["mode", "loss", "window_size", "hop_divisor", "n_bands",
+    "spectral": ["inverse", "jitter", "loss", "window_size", "hop_divisor", "n_bands",
                   "global_amount", "phase_loss", "pre_echo", "noise_shape",
                   "quantizer", "hf_threshold", "transient_ratio", "slushy_rate"],
     "crush": ["crush", "decimate"],
@@ -186,7 +195,7 @@ PARAM_SECTIONS = {
 
 # Integer/choice parameter value counts (for randomization)
 CHOICE_RANGES = {
-    "mode": len(MODE_NAMES),
+    "inverse": 2,
     "quantizer": len(QUANTIZER_NAMES),
     "packets": len(PACKET_NAMES),
     "filter_type": len(FILTER_NAMES),

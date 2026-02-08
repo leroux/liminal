@@ -1,0 +1,14 @@
+{
+  "jitter": 0.5,
+  "loss": 0.0,
+  "window_size": 2048,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.8,
+  "slushy_rate": 0.01,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Jitter",
+    "description": "Slushy freeze with phase jitter \u2014 slowly drifting spectral cloud"
+  }
+}

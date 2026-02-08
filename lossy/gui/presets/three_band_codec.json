@@ -1,0 +1,13 @@
+{
+  "loss": 0.55,
+  "window_size": 4096,
+  "n_bands": 3,
+  "quantizer": 1,
+  "weighting": 1.0,
+  "auto_gain": 0.4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Extreme Bands",
+    "description": "3-band compand codec \u2014 crude low/mid/high triage, dramatic spectral dropouts"
+  }
+}

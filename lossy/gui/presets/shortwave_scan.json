@@ -1,0 +1,19 @@
+{
+  "loss": 0.5,
+  "window_size": 1024,
+  "filter_type": 1,
+  "filter_freq": 2000.0,
+  "filter_width": 0.15,
+  "filter_slope": 2,
+  "bounce": 1,
+  "bounce_target": 5,
+  "bounce_rate": 0.15,
+  "bounce_lfo_min": 0.05,
+  "bounce_lfo_max": 0.3,
+  "auto_gain": 0.4,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Radio Scan",
+    "description": "Narrow bandpass sweeping slowly \u2014 like tuning through shortwave stations"
+  }
+}

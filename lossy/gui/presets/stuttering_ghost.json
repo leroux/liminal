@@ -1,0 +1,14 @@
+{
+  "loss": 0.5,
+  "window_size": 1024,
+  "packets": 2,
+  "packet_rate": 0.4,
+  "packet_size": 80.0,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Inverse residue with packet repeat \u2014 stuttering whispers of discarded harmonics"
+  },
+  "inverse": 1
+}

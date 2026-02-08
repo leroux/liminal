@@ -1,0 +1,14 @@
+{
+  "inverse": 1,
+  "jitter": 0.5,
+  "phase_loss": 0.3,
+  "loss": 0.6,
+  "window_size": 4096,
+  "verb": 0.4,
+  "decay": 0.7,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Inverse + jitter + phase quantization \u2014 triple phase/magnitude combo, eerie metallic ghosts"
+  }
+}

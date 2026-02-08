@@ -1,0 +1,23 @@
+{
+  "loss": 0.6,
+  "window_size": 1024,
+  "n_bands": 12,
+  "filter_type": 1,
+  "filter_freq": 1500.0,
+  "filter_width": 0.3,
+  "filter_slope": 1,
+  "packets": 1,
+  "packet_rate": 0.15,
+  "packet_size": 40.0,
+  "bounce": 1,
+  "bounce_target": 5,
+  "bounce_rate": 0.08,
+  "bounce_lfo_min": 0.02,
+  "bounce_lfo_max": 0.1,
+  "auto_gain": 0.3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Radio Scan",
+    "description": "Bandpass drift + occasional dropouts \u2014 fading AM radio signal"
+  }
+}

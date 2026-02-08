@@ -1,0 +1,13 @@
+{
+  "inverse": 0,
+  "jitter": 0.2,
+  "loss": 0.65,
+  "window_size": 2048,
+  "n_bands": 21,
+  "quantizer": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Codec",
+    "description": "Standard codec loss + subtle jitter \u2014 adds clock instability to MP3-style degradation"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "loss": 0.5,
+  "window_size": 4096,
+  "pre_echo": 0.9,
+  "transient_ratio": 2.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Sound Design",
+    "description": "Extreme pre-echo with sensitive detection \u2014 noise smears forward before every transient"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "loss": 0.7,
+  "window_size": 2048,
+  "crush": 0.4,
+  "decimate": 0.3,
+  "noise_shape": 0.6,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Inverse residue through bitcrusher \u2014 crunchy ghost artifacts"
+  },
+  "inverse": 1
+}

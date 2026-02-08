@@ -53,7 +53,8 @@ SIGNAL CHAIN: Input -> Spectral Loss (STFT) -> Crush/Decimate -> Packets -> Filt
 PARAMETERS AND RANGES:
 
 Spectral Loss:
-- mode: 0=Standard (quantize+gate spectral bins), 1=Inverse (residual — everything Standard discards), 2=Jitter (random phase noise, keeps magnitudes)
+- inverse: 0=Standard (hear processed signal), 1=Inverse (hear the residual — everything Standard discards)
+- jitter (0.0-1.0): Random phase perturbation amount. 0=off, 1=max. Independent of magnitude processing.
 - loss (0.0-1.0): Destruction amount. 0=clean, 0.5=noticeable degradation, 1.0=heavily destroyed.
 - window_size (64-16384): FFT window size in samples. Large=smooth/dark, small=glitchy/garbled. Common: 4096/2048/1024/512/256.
 - hop_divisor (1-8): Overlap ratio = 1/hop_divisor. 4=75% overlap (default), 2=50%, 8=87.5%.
@@ -95,7 +96,7 @@ Output:
 - wet_dry (0.0-1.0): 0=dry, 1=wet.
 
 RECIPES:
-- Underwater/streaming: loss 0.7-0.9, window_size 4096, standard mode, no crush
+- Underwater/streaming: loss 0.7-0.9, window_size 4096, inverse 0, no crush
 - Glitchy digital: loss 0.5, window_size 256-512, packet loss, crush 0.3
 - Lo-fi radio: loss 0.4, bandpass filter at 800-2000Hz, verb 0.2, decimate 0.3
 - Frozen texture: freeze on, slushy mode, loss 0.5, verb 0.3
@@ -139,7 +140,8 @@ REVERB_PARAM_DESCRIPTIONS = {
 }
 
 LOSSY_PARAM_DESCRIPTIONS = {
-    "mode": "0=Standard (quantize+gate), 1=Inverse (residual), 2=Jitter (phase noise).",
+    "inverse": "0=Standard (hear processed), 1=Inverse (hear residual).",
+    "jitter": "Range 0.0-1.0. Random phase perturbation. 0=off, 1=max. Independent of magnitude processing.",
     "loss": "Range 0.0-1.0. Destruction amount. 0=clean, 1.0=destroyed.",
     "window_size": "Range 64-16384. FFT window size in samples. Large=smooth, small=glitchy.",
     "hop_divisor": "Range 1-8. Overlap = 1/hop_divisor. 4=75% overlap (default).",

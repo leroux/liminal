@@ -1,0 +1,14 @@
+{
+  "inverse": 1,
+  "jitter": 0.3,
+  "loss": 0.55,
+  "window_size": 1024,
+  "packets": 2,
+  "packet_rate": 0.4,
+  "packet_size": 40.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Inverse + jitter + packet repeat \u2014 glitched whispers from the negative space"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "loss": 0.2,
+  "window_size": 2048,
+  "filter_type": 1,
+  "filter_freq": 600.0,
+  "filter_width": 0.02,
+  "filter_slope": 2,
+  "verb": 0.5,
+  "decay": 0.85,
+  "verb_position": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Resonant Self-Oscillation",
+    "description": "Ultra-narrow 96dB bandpass + long verb \u2014 filter nearly sings on its own"
+  }
+}
