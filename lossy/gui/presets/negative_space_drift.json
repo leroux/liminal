@@ -1,0 +1,17 @@
+{
+  "inverse": 1,
+  "jitter": 0.25,
+  "loss": 0.45,
+  "window_size": 4096,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.8,
+  "slushy_rate": 0.01,
+  "verb": 0.5,
+  "decay": 0.8,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Frozen inverse + jitter drift \u2014 slowly morphing negative-space drone"
+  }
+}

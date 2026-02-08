@@ -1,0 +1,17 @@
+{
+  "loss": 0.25,
+  "window_size": 4096,
+  "verb": 0.6,
+  "decay": 0.9,
+  "verb_position": 0,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.6,
+  "slushy_rate": 0.005,
+  "gate": 0.0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Textural",
+    "description": "Gentle loss + long verb + slow slushy freeze \u2014 30-second cinematic dissolve"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "loss": 0.6,
+  "window_size": 4096,
+  "filter_type": 2,
+  "filter_freq": 3000.0,
+  "filter_width": 0.3,
+  "filter_slope": 2,
+  "verb": 0.4,
+  "decay": 0.7,
+  "verb_position": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Notch",
+    "description": "96dB notch carves a hole in degraded signal \u2014 hollow, resonant, reverberant"
+  }
+}

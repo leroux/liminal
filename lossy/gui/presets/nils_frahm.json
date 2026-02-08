@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.25,
   "window_size": 2048.0,
   "hop_divisor": 4.0,

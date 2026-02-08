@@ -1,0 +1,17 @@
+{
+  "loss": 0.6,
+  "window_size": 4096,
+  "freeze": 1,
+  "freeze_mode": 0,
+  "freezer": 0.7,
+  "slushy_rate": 0.008,
+  "verb": 0.4,
+  "decay": 0.7,
+  "verb_position": 0,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Inverse Combo",
+    "description": "Inverse mode + slushy freeze \u2014 frozen ghost slowly morphing"
+  },
+  "inverse": 1
+}

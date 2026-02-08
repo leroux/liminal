@@ -1,0 +1,18 @@
+{
+  "loss": 0.35,
+  "window_size": 1024,
+  "filter_type": 1,
+  "filter_freq": 440.0,
+  "filter_width": 0.01,
+  "filter_slope": 2,
+  "verb": 0.7,
+  "decay": 0.9,
+  "verb_position": 1,
+  "phase_loss": 0.1,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Resonant Self-Oscillation",
+    "description": "Extreme resonance at A440 + verb feedback \u2014 pitched drone from any input"
+  }
+}

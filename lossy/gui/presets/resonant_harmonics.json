@@ -1,5 +1,4 @@
 {
-  "mode": 1,
   "loss": 0.5,
   "window_size": 2048,
   "filter_type": 1,
@@ -15,5 +14,6 @@
   "_meta": {
     "category": "Sound Design",
     "description": "Inverse mode + resonant bandpass \u2014 isolates and amplifies hidden harmonic content"
-  }
+  },
+  "inverse": 1
 }

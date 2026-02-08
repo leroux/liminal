@@ -1,0 +1,12 @@
+{
+  "inverse": 1,
+  "loss": 0.6,
+  "window_size": 96,
+  "hop_divisor": 2,
+  "n_bands": 3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Granular",
+    "description": "Inverse mode at micro-window \u2014 residual becomes pitched tonal artifact"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "loss": 0.7,
+  "window_size": 64,
+  "hop_divisor": 2,
+  "n_bands": 8,
+  "weighting": 0.0,
+  "auto_gain": 0.6,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Micro-Window",
+    "description": "64-sample FFT \u2014 pitched buzzing, almost ring-mod territory"
+  }
+}

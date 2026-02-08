@@ -177,6 +177,7 @@ class ReverbGUI:
                                self.params["feedback_gain"], length=220)
         row = self._add_slider(f, row, "wet_dry", "Wet/Dry Mix", 0.0, 1.0,
                                self.params["wet_dry"], length=220)
+        self.locks["wet_dry"].set(True)  # locked by default
         row = self._add_slider(f, row, "diffusion", "Diffusion", 0.0, 0.7,
                                self.params["diffusion"], length=220)
         row = self._add_slider(f, row, "saturation", "Saturation", 0.0, 1.0,
@@ -466,6 +467,14 @@ class ReverbGUI:
         self.ai_status_var.set("New session")
 
     def _build_presets_page(self, parent):
+        # Search box
+        search_frame = ttk.Frame(parent)
+        search_frame.pack(fill="x", pady=(5, 0))
+        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 4))
+        self._preset_search_var = tk.StringVar()
+        self._preset_search_var.trace_add("write", lambda *_: self._refresh_preset_list())
+        ttk.Entry(search_frame, textvariable=self._preset_search_var).pack(side="left", fill="x", expand=True)
+
         # Treeview grouped by category
         tree_frame = ttk.Frame(parent)
         tree_frame.pack(fill="both", expand=True, pady=5)
@@ -495,6 +504,7 @@ class ReverbGUI:
         ttk.Button(btn_frame, text="Save As...", command=self._on_save_preset).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Delete", command=self._on_delete_preset).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Refresh", command=self._refresh_preset_list).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="★ Favorite", command=self._on_toggle_favorite).pack(side="left", padx=2)
 
     def _build_description_page(self, parent):
         self.diagram_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
@@ -1899,11 +1909,12 @@ class ReverbGUI:
         self.preset_tree.delete(*self.preset_tree.get_children())
         self._preset_meta.clear()
         os.makedirs(PRESET_DIR, exist_ok=True)
+        favorites = self._load_favorites()
 
         # Read all presets and group by category
         categories = {}
         for filename in sorted(os.listdir(PRESET_DIR)):
-            if not filename.endswith(".json"):
+            if not filename.endswith(".json") or filename == "favorites.json":
                 continue
             name = filename[:-5]
             path = os.path.join(PRESET_DIR, filename)
@@ -1917,6 +1928,27 @@ class ReverbGUI:
             desc = meta.get("description", "")
             self._preset_meta[name] = {"category": cat, "description": desc}
             categories.setdefault(cat, []).append(name)
+
+        # Filter by search query
+        query = ""
+        if hasattr(self, "_preset_search_var"):
+            query = self._preset_search_var.get().strip().lower()
+
+        def _matches(name):
+            if not query:
+                return True
+            meta = self._preset_meta.get(name, {})
+            return query in name.lower() or query in meta.get("description", "").lower()
+
+        # Favorites group at top (only if any favorites exist among loaded presets)
+        fav_names = sorted(n for n in favorites if n in self._preset_meta and _matches(n))
+        if fav_names:
+            fav_id = self.preset_tree.insert("", "end", text="★ Favorites", open=True,
+                                              values=("", ""))
+            for name in fav_names:
+                desc = self._preset_meta[name].get("description", "")
+                self.preset_tree.insert(fav_id, "end", text=f"★ {name}",
+                                         values=(desc, name))
 
         # Category display order
         cat_order = ["Plate", "Room", "Hall", "Ambient", "Modulated",
@@ -1933,12 +1965,45 @@ class ReverbGUI:
                 ordered_cats.append(c)
 
         for cat in ordered_cats:
+            filtered = [n for n in categories[cat] if _matches(n)]
+            if not filtered:
+                continue
             cat_id = self.preset_tree.insert("", "end", text=cat, open=True,
                                               values=("", ""))
-            for name in categories[cat]:
+            for name in filtered:
                 desc = self._preset_meta[name].get("description", "")
-                self.preset_tree.insert(cat_id, "end", text=name,
+                display = f"★ {name}" if name in favorites else name
+                self.preset_tree.insert(cat_id, "end", text=display,
                                          values=(desc, name))
+
+    def _load_favorites(self):
+        path = os.path.join(PRESET_DIR, "favorites.json")
+        try:
+            with open(path) as fh:
+                return set(json.load(fh))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return set()
+
+    def _save_favorites(self, favorites):
+        path = os.path.join(PRESET_DIR, "favorites.json")
+        os.makedirs(PRESET_DIR, exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(sorted(favorites), fh, indent=2)
+            fh.write("\n")
+
+    def _on_toggle_favorite(self):
+        name = self._get_selected_preset_name()
+        if not name:
+            return
+        favorites = self._load_favorites()
+        if name in favorites:
+            favorites.discard(name)
+            self.status_var.set(f"Removed from favorites: {name}")
+        else:
+            favorites.add(name)
+            self.status_var.set(f"Added to favorites: {name}")
+        self._save_favorites(favorites)
+        self._refresh_preset_list()
 
     def _get_selected_preset_name(self):
         sel = self.preset_tree.selection()

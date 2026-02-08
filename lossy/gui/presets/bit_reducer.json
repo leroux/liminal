@@ -1,5 +1,4 @@
 {
-  "mode": 0,
   "loss": 0.0,
   "window_size": 2048,
   "global_amount": 1.0,

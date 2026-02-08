@@ -1,0 +1,17 @@
+{
+  "loss": 0.75,
+  "window_size": 8192,
+  "pre_echo": 1.0,
+  "transient_ratio": 2.0,
+  "noise_shape": 0.5,
+  "quantizer": 1,
+  "verb": 0.3,
+  "decay": 0.5,
+  "verb_position": 0,
+  "auto_gain": 0.5,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Pre-Echo",
+    "description": "Max pre-echo + huge window + verb \u2014 ghostly reverse-reverb shadows precede each transient"
+  }
+}

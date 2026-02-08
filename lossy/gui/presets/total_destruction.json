@@ -1,0 +1,18 @@
+{
+  "loss": 0.85,
+  "window_size": 512,
+  "crush": 0.7,
+  "decimate": 0.6,
+  "packets": 2,
+  "packet_rate": 0.5,
+  "packet_size": 50.0,
+  "noise_shape": 0.6,
+  "phase_loss": 0.5,
+  "auto_gain": 0.6,
+  "threshold": 0.2,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Layered Abuse",
+    "description": "Everything on at once \u2014 spectral loss + crush + decimate + packet repeat, total signal carnage"
+  }
+}

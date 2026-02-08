@@ -2,10 +2,13 @@
 
 Core algorithm: window -> FFT -> degrade spectral content -> IFFT -> overlap-add.
 
-Three modes:
+Magnitude processing (controlled by loss):
   Standard -- spectral quantization + psychoacoustic band gating
   Inverse  -- output the spectral residual (everything Standard discards)
-  Jitter   -- phase perturbation (digital clock inaccuracy emulation)
+
+Phase processing (two independent controls):
+  Phase Loss -- deterministic quantization of phase angles (metallic/robotic)
+  Jitter     -- random phase perturbation (digital clock inaccuracy emulation)
 
 The "underwater" warbling comes from zeroing *different* spectral bands each
 frame, mimicking how perceptual codecs discard different sub-threshold
@@ -14,7 +17,6 @@ components frame-to-frame.  Band gating is weighted by psychoacoustic masking
 are more likely to be dropped -- matching real codec behaviour.
 
 Additional features beyond basic STFT:
-  Phase Loss   -- quantize phase angles for metallic/robotic character
   Compand      -- power-law (|x|^0.75) quantizer matching MP3's nonuniform step
   Pre-Echo     -- enhanced transient smearing by boosting loss before attacks
   Noise Shape  -- envelope-following quantization (coarser in spectral valleys)
@@ -37,7 +39,8 @@ def spectral_process(input_audio, params):
     """
     g = float(params.get("global_amount", 1.0))
     loss = float(params["loss"]) * g
-    mode = int(params["mode"])
+    inverse = int(params.get("inverse", 0))
+    jitter = float(params.get("jitter", 0.0)) * g
     seed = int(params.get("seed", 42))
     freeze = int(params.get("freeze", 0))
     freeze_mode = int(params.get("freeze_mode", 0))
@@ -51,7 +54,7 @@ def spectral_process(input_audio, params):
     transient_ratio = float(params.get("transient_ratio", 4.0))
     slushy_rate_param = float(params.get("slushy_rate", 0.03))
 
-    if loss <= 0.0 and freeze == 0 and phase_loss <= 0.0:
+    if loss <= 0.0 and freeze == 0 and phase_loss <= 0.0 and jitter <= 0.0:
         return input_audio.copy()
 
     # --- Window and hop from params ---
@@ -122,31 +125,27 @@ def spectral_process(input_audio, params):
             if transient_flags[fi + 1]:
                 frame_loss = min(1.0, loss + pre_echo_amount * 0.5)
 
-        # ---------- mode processing ----------
-        if mode == 0:  # Standard
+        # ---------- magnitude processing ----------
+        if frame_loss > 0:
             proc_mag = _standard(
                 magnitudes, frame_loss, rng, band_edges, n_bands,
                 ath_weights, quantizer_type, noise_shape, weighting,
             )
-            proc_phase = phases
-            # Phase quantization
-            if phase_loss > 0:
-                n_levels = max(4, int(64 * (1.0 - phase_loss)))
-                step = 2.0 * np.pi / n_levels
-                proc_phase = step * np.round(proc_phase / step)
-
-        elif mode == 1:  # Inverse
-            std_mag = _standard(
-                magnitudes, frame_loss, rng, band_edges, n_bands,
-                ath_weights, quantizer_type, noise_shape, weighting,
-            )
-            proc_mag = np.maximum(magnitudes - std_mag, 0.0)
-            proc_phase = phases
-
-        else:  # Jitter
+        else:
             proc_mag = magnitudes.copy()
-            noise = rng.uniform(-np.pi, np.pi, len(phases)) * frame_loss
-            proc_phase = phases + noise
+
+        if inverse:
+            proc_mag = np.maximum(magnitudes - proc_mag, 0.0)
+
+        # ---------- phase processing ----------
+        proc_phase = phases
+        if phase_loss > 0:
+            n_levels = max(4, int(64 * (1.0 - phase_loss)))
+            step = 2.0 * np.pi / n_levels
+            proc_phase = step * np.round(proc_phase / step)
+        if jitter > 0:
+            noise = rng.uniform(-np.pi, np.pi, len(phases)) * jitter
+            proc_phase = proc_phase + noise
 
         # ---------- bandwidth limiting (like low-bitrate MP3) ----------
         if frame_loss > hf_threshold:

@@ -1,0 +1,21 @@
+{
+  "loss": 0.3,
+  "window_size": 2048,
+  "filter_type": 1,
+  "filter_freq": 800.0,
+  "filter_width": 0.08,
+  "filter_slope": 2,
+  "bounce": 1,
+  "bounce_target": 5,
+  "bounce_rate": 0.4,
+  "bounce_lfo_min": 0.2,
+  "bounce_lfo_max": 2.0,
+  "verb": 0.2,
+  "decay": 0.4,
+  "verb_position": 1,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Radio Scan",
+    "description": "Tight resonant filter sweeping faster \u2014 tonal scanning with verb tail"
+  }
+}

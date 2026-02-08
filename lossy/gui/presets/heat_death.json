@@ -1,0 +1,17 @@
+{
+  "loss": 0.45,
+  "window_size": 8192,
+  "quantizer": 1,
+  "noise_shape": 0.4,
+  "verb": 0.85,
+  "decay": 0.98,
+  "verb_position": 0,
+  "hf_threshold": 0.15,
+  "phase_loss": 0.2,
+  "auto_gain": 0.3,
+  "wet_dry": 1.0,
+  "_meta": {
+    "category": "Slow Cinematic",
+    "description": "Extreme verb decay into large-window codec \u2014 everything slowly loses definition and fades to hiss"
+  }
+}

@@ -1,6 +1,6 @@
 {
-  "mode": 2,
-  "loss": 0.6,
+  "jitter": 0.6,
+  "loss": 0.0,
   "window_size": 1024,
   "global_amount": 1.0,
   "packets": 0,
