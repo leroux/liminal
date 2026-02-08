@@ -145,12 +145,14 @@ impl<P: Plugin> Backend<P> for CpalMidir {
                     }
                 };
 
+                let device_channels = input.config.channels as usize;
+                let expected_channels = self.output.config.channels as usize;
                 macro_rules! build_input_streams {
                     ($sample_format:expr, $(($format:path, $primitive_type:ty)),*) => {
                         match $sample_format {
                             $($format => input.device.build_input_stream(
                                 &input.config,
-                                self.build_input_data_callback::<$primitive_type>(input_unparker, rb_producer),
+                                self.build_input_data_callback::<$primitive_type>(input_unparker, rb_producer, device_channels, expected_channels),
                                 error_cb,
                                 None,
                             ),)*
@@ -436,24 +438,41 @@ impl CpalMidir {
             .unwrap_or_default() as usize;
         let input = input_device
             .map(|device| -> Result<CpalDevice> {
-                let input_configs: Vec<_> = device
+                // First try exact channel match, then fall back to accepting fewer channels
+                // (e.g. mono mic when stereo is requested — we'll duplicate in the callback)
+                let all_configs: Vec<_> = device
                     .supported_input_configs()
                     .context("Could not get supported audio input configurations")?
                     .filter(|c| match c.buffer_size() {
                         cpal::SupportedBufferSize::Range { min, max } => {
-                            c.channels() as usize == num_input_channels
-                                && (c.min_sample_rate()..=c.max_sample_rate())
-                                    .contains(&requested_sample_rate)
+                            (c.min_sample_rate()..=c.max_sample_rate())
+                                .contains(&requested_sample_rate)
                                 && (min..=max).contains(&&config.period_size)
                         }
                         cpal::SupportedBufferSize::Unknown => false,
                     })
                     .collect();
+                let input_configs: Vec<_> = all_configs
+                    .iter()
+                    .filter(|c| c.channels() as usize == num_input_channels)
+                    .cloned()
+                    .collect();
+                // Fall back to configs with fewer channels (e.g. mono device)
+                let fallback_configs: Vec<_> = all_configs
+                    .iter()
+                    .filter(|c| (c.channels() as usize) < num_input_channels && c.channels() >= 1)
+                    .cloned()
+                    .collect();
                 let input_config_range = input_configs
                     .iter()
-                    // Prefer floating point samples to avoid conversions
                     .find(|c| c.sample_format() == SampleFormat::F32)
                     .or_else(|| input_configs.first())
+                    .or_else(|| {
+                        fallback_configs
+                            .iter()
+                            .find(|c| c.sample_format() == SampleFormat::F32)
+                            .or_else(|| fallback_configs.first())
+                    })
                     .cloned()
                     .with_context(|| {
                         format!(
@@ -630,6 +649,8 @@ impl CpalMidir {
         &self,
         input_unparker: Unparker,
         mut input_rb_producer: rtrb::Producer<f32>,
+        device_channels: usize,
+        expected_channels: usize,
     ) -> impl FnMut(&[T], &InputCallbackInfo) + Send + 'static
     where
         T: Sample,
@@ -639,12 +660,16 @@ impl CpalMidir {
         f32: FromSample<T>,
     {
         // This callback needs to copy input samples to a ring buffer that can be read from in the
-        // output data callback
+        // output data callback. When the device has fewer channels than expected (e.g. mono mic
+        // with stereo plugin), we duplicate channels to fill the gap.
         move |data, _info| {
-            for sample in data {
-                // If for whatever reason the input callback is fired twice before an output
-                // callback, then just spin on this until the push succeeds
-                while input_rb_producer.push(sample.to_sample()).is_err() {}
+            let frames = data.len() / device_channels.max(1);
+            for frame in 0..frames {
+                for ch in 0..expected_channels {
+                    let src_ch = ch.min(device_channels - 1);
+                    let sample: f32 = data[frame * device_channels + src_ch].to_sample();
+                    while input_rb_producer.push(sample).is_err() {}
+                }
             }
 
             // The run function is blocked until a single period has been processed here. After this
