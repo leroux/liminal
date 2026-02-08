@@ -88,6 +88,12 @@ impl Plugin for LossyPlugin {
             main_output_channels: NonZeroU32::new(2),
             ..AudioIOLayout::const_default()
         },
+        // Mono input -> stereo output (e.g. built-in laptop mic)
+        AudioIOLayout {
+            main_input_channels: NonZeroU32::new(1),
+            main_output_channels: NonZeroU32::new(2),
+            ..AudioIOLayout::const_default()
+        },
     ];
 
     type SysExMessage = ();
