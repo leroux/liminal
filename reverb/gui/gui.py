@@ -1923,6 +1923,8 @@ class ReverbGUI:
 
         def do_render():
             try:
+                t_total = time.perf_counter()
+
                 tail_len = int(self.sliders["tail_length"].get() * SR)
                 if self.source_audio.ndim == 2:
                     tail = np.zeros((tail_len, self.source_audio.shape[1]))
@@ -1930,7 +1932,9 @@ class ReverbGUI:
                     tail = np.zeros(tail_len)
                 audio_in = np.concatenate([self.source_audio, tail])
 
+                t0 = time.perf_counter()
                 output = render_fdn(audio_in, params)
+                t_render = time.perf_counter() - t0
 
                 ok, err = safety_check(output)
                 if not ok:
@@ -1941,12 +1945,23 @@ class ReverbGUI:
 
                 from shared.analysis import analyze
                 from shared.audio_features import generate_spectrogram_png
+
+                t0 = time.perf_counter()
                 self.rendered_metrics = analyze(output, SR)
+                t_analyze = time.perf_counter() - t0
+
+                t0 = time.perf_counter()
                 self.rendered_spectrogram = generate_spectrogram_png(output, SR)
+                t_spec = time.perf_counter() - t0
+
                 self.rendered_audio = output
                 self.rendered_warning = loud_warning
                 self.rendered_params = self._params_snapshot(params)
                 dur = len(output) / SR
+                t_pipeline = time.perf_counter() - t_total
+
+                timing = (f"render {t_render:.3f}s + analyze {t_analyze:.3f}s "
+                          f"+ spec {t_spec:.3f}s = {t_pipeline:.3f}s")
 
                 def on_gui():
                     self._save_generation()
@@ -1954,9 +1969,11 @@ class ReverbGUI:
                     gen = self._gen_index + 1
                     if status_prefix:
                         self.status_var.set(
-                            f"Gen {gen} — {status_prefix} {self.llm._iterate_count}/{self.llm.MAX_ITERATE} complete")
+                            f"Gen {gen} — {status_prefix} {self.llm._iterate_count}/{self.llm.MAX_ITERATE} "
+                            f"complete [{timing}]")
                     else:
-                        self.status_var.set(f"Gen {gen} — Playing ({dur:.1f}s){loud_warning}")
+                        self.status_var.set(
+                            f"Gen {gen} — Playing ({dur:.1f}s) [{timing}]{loud_warning}")
                     self._draw_waveform()
                     self._draw_spectrograms()
                     if on_complete:

@@ -167,7 +167,7 @@ pub struct LossyPluginParams {
 impl Default for LossyPluginParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(620, 700),
+            editor_state: EguiState::from_size(620, 780),
 
             // --- Spectral Loss ---
             mode: EnumParam::new("Mode", SpectralMode::Standard),

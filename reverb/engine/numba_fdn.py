@@ -4,10 +4,15 @@ Same algorithm as engine/fdn.py, but all state is flat numpy arrays
 so Numba can JIT the entire per-sample loop.
 """
 
+import math
 import numpy as np
 from numba import njit
 
 N = 8
+
+# Matrix type constants (passed as int to njit)
+MATRIX_HOUSEHOLDER = 0
+MATRIX_GENERIC = 1
 
 
 @njit(cache=True)
@@ -24,6 +29,8 @@ def _process_block(
     damping_coeffs, damping_y1,
     # Feedback matrix (8x8)
     matrix,
+    # Matrix type flag (0=householder O(N), 1=generic O(N^2))
+    matrix_type_flag,
     # Gains
     feedback_gain, input_gains, output_gains, wet_dry,
     # Saturation
@@ -35,6 +42,11 @@ def _process_block(
 ):
     n_samples = len(input_audio)
     pd_wi = pre_delay_write_idx[0]
+    dry_gain = 1.0 - wet_dry
+
+    # Pre-allocate scratch arrays once (avoid per-sample heap allocs)
+    reads = np.empty(N)
+    mixed = np.empty(N)
 
     for n in range(n_samples):
         x = input_audio[n]
@@ -59,7 +71,6 @@ def _process_block(
         # --- Read from delay lines ---
         wet_L = 0.0
         wet_R = 0.0
-        reads = np.empty(N)
         for i in range(N):
             wi = delay_write_idxs[i]
             rd = (wi - 1 - delay_times[i]) % delay_buf_len
@@ -75,19 +86,28 @@ def _process_block(
             reads[i] = damping_y1[i]
 
         # --- Feedback matrix multiply ---
-        mixed = np.empty(N)
-        for i in range(N):
+        if matrix_type_flag == MATRIX_HOUSEHOLDER:
+            # Householder O(N): mixed = reads - (2/N) * sum(reads)
             s = 0.0
-            for j in range(N):
-                s += matrix[i, j] * reads[j]
-            mixed[i] = s
+            for i in range(N):
+                s += reads[i]
+            s *= (2.0 / N)
+            for i in range(N):
+                mixed[i] = reads[i] - s
+        else:
+            # Generic O(N^2) matrix multiply
+            for i in range(N):
+                s = 0.0
+                for j in range(N):
+                    s += matrix[i, j] * reads[j]
+                mixed[i] = s
 
         # --- Write back to delay lines (with optional saturation + DC blocker) ---
         for i in range(N):
             wi = delay_write_idxs[i]
             val = feedback_gain * mixed[i] + input_gains[i] * diffused
             if saturation > 0.0:
-                val = (1.0 - saturation) * val + saturation * np.tanh(val)
+                val = (1.0 - saturation) * val + saturation * math.tanh(val)
             # DC blocker: y[n] = x[n] - x[n-1] + R * y[n-1]
             dc_y = val - dc_x1[i] + dc_R * dc_y1[i]
             dc_x1[i] = val
@@ -96,8 +116,8 @@ def _process_block(
             delay_write_idxs[i] = (wi + 1) % delay_buf_len
 
         # --- Wet/dry mix (stereo) ---
-        output[n, 0] = (1.0 - wet_dry) * x + wet_dry * wet_L
-        output[n, 1] = (1.0 - wet_dry) * x + wet_dry * wet_R
+        output[n, 0] = dry_gain * x + wet_dry * wet_L
+        output[n, 1] = dry_gain * x + wet_dry * wet_R
 
     pre_delay_write_idx[0] = pd_wi
 
@@ -105,7 +125,7 @@ def _process_block(
 def render_fdn_fast(input_audio: np.ndarray, params: dict,
                     chunk_callback=None, chunk_size=4096) -> np.ndarray:
     """Drop-in replacement for engine.fdn.render_fdn, but Numba-accelerated."""
-    from reverb.primitives.matrix import build_matrix_apply, get_matrix, MATRIX_TYPES
+    from reverb.primitives.matrix import get_matrix, MATRIX_TYPES
 
     n_samples = len(input_audio)
 
@@ -113,10 +133,13 @@ def render_fdn_fast(input_audio: np.ndarray, params: dict,
     matrix_type = params.get("matrix_type", "householder")
     if matrix_type == "custom" and "matrix_custom" in params:
         matrix = np.array(params["matrix_custom"], dtype=np.float64)
+        matrix_type_flag = MATRIX_GENERIC
     elif matrix_type in MATRIX_TYPES:
         matrix = get_matrix(matrix_type, N, seed=params.get("matrix_seed", 42))
+        matrix_type_flag = MATRIX_HOUSEHOLDER if matrix_type == "householder" else MATRIX_GENERIC
     else:
         matrix = get_matrix("householder", N)
+        matrix_type_flag = MATRIX_HOUSEHOLDER
 
     # --- Pre-delay ---
     pre_delay_samples = max(1, int(params["pre_delay"]))
@@ -153,7 +176,6 @@ def render_fdn_fast(input_audio: np.ndarray, params: dict,
     saturation = float(params.get("saturation", 0.0))
 
     # --- DC blocker state ---
-    # One-pole high-pass at ~5 Hz: R = 1 - 2*pi*fc/SR
     from reverb.engine.params import SR as sample_rate
     dc_R = 1.0 - 2.0 * np.pi * 5.0 / sample_rate
     dc_x1 = np.zeros(N)
@@ -164,13 +186,9 @@ def render_fdn_fast(input_audio: np.ndarray, params: dict,
         [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0]),
         dtype=np.float64)
     stereo_width = float(params.get("stereo_width", 1.0))
-    pan_gain_L = np.empty(N, dtype=np.float64)
-    pan_gain_R = np.empty(N, dtype=np.float64)
-    for i in range(N):
-        pan = node_pans[i] * stereo_width
-        angle = (pan + 1.0) * (np.pi / 4.0)
-        pan_gain_L[i] = np.cos(angle)
-        pan_gain_R[i] = np.sin(angle)
+    angles = (node_pans * stereo_width + 1.0) * (np.pi / 4.0)
+    pan_gain_L = np.cos(angles)
+    pan_gain_R = np.sin(angles)
 
     input_f64 = input_audio.astype(np.float64)
     output = np.empty((n_samples, 2), dtype=np.float64)
@@ -182,7 +200,7 @@ def render_fdn_fast(input_audio: np.ndarray, params: dict,
             diff_bufs, diff_lens, diff_gains, diff_idxs, n_diff_stages,
             delay_bufs, delay_buf_len, delay_times, delay_write_idxs,
             damping_coeffs, damping_y1,
-            matrix,
+            matrix, matrix_type_flag,
             feedback_gain, input_gains, output_gains, wet_dry,
             saturation,
             dc_x1, dc_y1, dc_R,
