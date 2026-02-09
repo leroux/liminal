@@ -1,0 +1,14 @@
+Generate all effects for asymmetry track
+Input: /Users/user/reverb/asymmetry 2024-01-15 2050.wav
+Output: /Users/user/reverb/explore/output_asymmetry/
+
+Batches (2 modules per worker):
+  [x] batch1: a_delay, b_reverb (114 files, 12.0s)
+  [x] batch2: c_modulation, d_distortion (169 files, 10.5s)
+  [x] batch3: e_filter, f_dynamics (91 files, 6.0s)
+  [x] batch4: g_pitch_time, h_spectral (152 files, 250.4s)
+  [ ] batch5: i_granular, j_chaos_math
+  [ ] batch6: k_neural, l_convolution
+  [ ] batch7: m_physical, n_lofi
+  [ ] batch8: o_spatial, p_envelope
+  [ ] batch9: q_combo, r_misc

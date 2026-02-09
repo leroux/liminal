@@ -13,8 +13,12 @@ FDN Loop (per sample):
     7. Sum weighted outputs (output gains)
 """
 
+import logging
+import time
+
 import numpy as np
 
+log = logging.getLogger(__name__)
 
 N = 8  # number of delay lines
 
@@ -56,24 +60,43 @@ def render_fdn(input_audio: np.ndarray, params: dict,
     Returns:
         stereo output (samples, 2)
     """
-    if input_audio.ndim == 2:
+    from reverb.engine.params import SR
+    t0 = time.perf_counter()
+    n_samples = input_audio.shape[0]
+    duration = n_samples / SR
+    has_mod = (
+        params.get("mod_master_rate", 0.0) > 0.0 and (
+            any(d > 0 for d in params.get("mod_depth_delay", [0] * 8)) or
+            any(d > 0 for d in params.get("mod_depth_damping", [0] * 8)) or
+            any(d > 0 for d in params.get("mod_depth_output", [0] * 8)) or
+            params.get("mod_depth_matrix", 0.0) > 0.0
+        )
+    )
+    engine = "mod" if has_mod else "static"
+    stereo_in = input_audio.ndim == 2
+
+    if stereo_in:
         if chunk_callback is not None:
-            # For streaming: mix stereo to mono so we can stream a single pass
             mono = input_audio.mean(axis=1)
-            return _render_mono(mono, params, chunk_callback, chunk_size)
+            result = _render_mono(mono, params, chunk_callback, chunk_size)
+        else:
+            wet_params = dict(params)
+            wet_params["wet_dry"] = 1.0
+            n = input_audio.shape[0]
+            wet = np.zeros((n, 2), dtype=np.float64)
+            for ch in range(input_audio.shape[1]):
+                wet += _render_mono(input_audio[:, ch], wet_params)
 
-        # Full stereo processing (no streaming)
-        wet_params = dict(params)
-        wet_params["wet_dry"] = 1.0
-        n = input_audio.shape[0]
-        wet = np.zeros((n, 2), dtype=np.float64)
-        for ch in range(input_audio.shape[1]):
-            wet += _render_mono(input_audio[:, ch], wet_params)
+            mix = float(params.get("wet_dry", 1.0))
+            dry = np.column_stack([input_audio[:, 0],
+                                   input_audio[:, 1] if input_audio.shape[1] > 1
+                                   else input_audio[:, 0]])
+            result = dry * (1.0 - mix) + wet * mix
+    else:
+        result = _render_mono(input_audio, params, chunk_callback, chunk_size)
 
-        mix = float(params.get("wet_dry", 1.0))
-        dry = np.column_stack([input_audio[:, 0],
-                               input_audio[:, 1] if input_audio.shape[1] > 1
-                               else input_audio[:, 0]])
-        return dry * (1.0 - mix) + wet * mix
-
-    return _render_mono(input_audio, params, chunk_callback, chunk_size)
+    elapsed = time.perf_counter() - t0
+    rtf = duration / elapsed if elapsed > 0 else float('inf')
+    log.info("render %.1fs audio in %.3fs (%s, %s, %.0fx RT)",
+             duration, elapsed, engine, "stereo" if stereo_in else "mono", rtf)
+    return result

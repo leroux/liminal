@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# macOS
+.DS_Store
+
 # Temp spectrograms for LLM tuner
 .tmp_spectrograms/
 
@@ -17,3 +20,11 @@ rust/target/
 
 # Audio files
 *.wav
+
+# Explore heavy output dirs
+explore/output/
+explore/output_asymmetry/
+explore/inputs/
+explore/asymmetry_winners/
+explore/lofidrum_winners/
+explore/sparse_hits_winners/
