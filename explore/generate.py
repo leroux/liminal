@@ -1,16 +1,16 @@
 """Main entry point: takes input WAV, generates all effect variants.
 
-Uses multiprocessing to render across all CPU cores.
-Per-variant timeout prevents slow effects from hanging the run.
+Uses concurrent.futures with spawn context for safe parallelism.
+Individual worker crashes and timeouts are handled gracefully.
 """
 import argparse
+import concurrent.futures
 import json
+import multiprocessing
 import os
-import signal
 import sys
 import time
 import fnmatch
-import multiprocessing
 from multiprocessing import cpu_count
 
 import numpy as np
@@ -18,7 +18,6 @@ import soundfile as sf
 
 from registry import discover_effects
 from primitives import post_process, post_process_stereo
-from manifest import write_manifest
 
 DEFAULT_TIMEOUT = 120  # seconds per variant
 
@@ -65,35 +64,15 @@ def category_from_id(effect_id):
     return cats.get(prefix, 'other')
 
 
-class _Timeout(Exception):
-    pass
-
-
-def _alarm_handler(signum, frame):
-    raise _Timeout()
-
-
 def _process_one(args):
-    """Worker function for multiprocessing. Runs a single effect variant.
+    """Worker function. Returns entry dict, None on failure, or raises on crash."""
+    effect_id, params, samples, sr, output_dir = args
 
-    Takes a tuple to be pickle-friendly:
-        (effect_id, params, samples, sr, output_dir, timeout)
-    Returns entry dict on success, None on failure.
-    """
-    effect_id, params, samples, sr, output_dir, timeout = args
-
-    # Set per-variant timeout via SIGALRM
-    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-    signal.alarm(timeout)
-
-    # Re-import in worker process (each process needs its own modules)
     from registry import discover_effects as _discover
     from primitives import post_process as _pp, post_process_stereo as _pps
 
     registry = _discover()
     if effect_id not in registry:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
         return None
 
     effect_fn, _ = registry[effect_id]
@@ -106,33 +85,15 @@ def _process_one(args):
         else:
             result = effect_fn(samples.copy(), sr)
 
-        if result is None:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            return None
-        if not np.all(np.isfinite(result)):
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-            return None
-        if np.max(np.abs(result)) > 1e6:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
+        if result is None or not np.all(np.isfinite(result)) or np.max(np.abs(result)) > 1e6:
             return None
 
         if result.ndim == 2:
             result = _pps(result, sr)
         else:
             result = _pp(result, sr)
-    except _Timeout:
-        signal.signal(signal.SIGALRM, old_handler)
-        return 'TIMEOUT'
     except Exception:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
         return None
-
-    signal.alarm(0)
-    signal.signal(signal.SIGALRM, old_handler)
 
     param_desc = make_param_description(params) if params else 'default'
     code = effect_id.split('_')[0]
@@ -159,7 +120,7 @@ def _process_one(args):
 
 def generate_all(input_path, output_dir, max_variants=1200, include=None, exclude=None,
                  workers=None, timeout=DEFAULT_TIMEOUT):
-    """Generate all effect variants from input audio using multiprocessing."""
+    """Generate all effect variants from input audio."""
     os.makedirs(output_dir, exist_ok=True)
 
     samples, sr = load_input(input_path)
@@ -168,7 +129,7 @@ def generate_all(input_path, output_dir, max_variants=1200, include=None, exclud
     registry = discover_effects()
     print(f"Discovered {len(registry)} effects")
 
-    # Filter effects by include/exclude patterns
+    # Filter effects
     effect_ids = sorted(registry.keys())
     if include:
         patterns = [p.strip() for p in include.split(',')]
@@ -179,8 +140,7 @@ def generate_all(input_path, output_dir, max_variants=1200, include=None, exclud
         effect_ids = [eid for eid in effect_ids
                      if not any(fnmatch.fnmatch(eid, p) for p in patterns)]
 
-    # Build work items: (effect_id, params, samples, sr, output_dir, timeout)
-    # Skip items whose output file already exists
+    # Build work items, skip already-generated
     work_items = []
     skipped = 0
     for effect_id in effect_ids:
@@ -197,7 +157,6 @@ def generate_all(input_path, output_dir, max_variants=1200, include=None, exclud
         for params in variant_params:
             if len(work_items) + skipped >= max_variants:
                 break
-            # Pre-check if output already exists
             category = category_from_id(effect_id)
             param_desc = make_param_description(params) if params else 'default'
             code = effect_id.split('_')[0]
@@ -206,7 +165,7 @@ def generate_all(input_path, output_dir, max_variants=1200, include=None, exclud
             if os.path.exists(fpath):
                 skipped += 1
                 continue
-            work_items.append((effect_id, params, samples, sr, output_dir, timeout))
+            work_items.append((effect_id, params, samples, sr, output_dir))
         if len(work_items) + skipped >= max_variants:
             break
 
@@ -214,41 +173,63 @@ def generate_all(input_path, output_dir, max_variants=1200, include=None, exclud
         print(f"Skipped {skipped} already-generated variants")
 
     n_workers = workers or max(1, cpu_count() - 1)
-    print(f"Processing {len(work_items)} variants across {n_workers} workers "
-          f"({timeout}s timeout, 1 CPU reserved)")
+    print(f"Processing {len(work_items)} variants, {n_workers} workers "
+          f"({timeout}s timeout)")
 
     total_start = time.time()
     entries = []
     done = 0
     timed_out = 0
+    crashed = 0
 
-    # chunksize=1: one slow variant won't block a batch
-    # maxtasksperchild=4: recycle workers to reclaim memory from leaked state
-    ctx = multiprocessing.get_context('fork')
-    with ctx.Pool(processes=n_workers, maxtasksperchild=4) as pool:
-        for result in pool.imap_unordered(_process_one, work_items, chunksize=1):
+    ctx = multiprocessing.get_context('spawn')
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=n_workers,
+        mp_context=ctx,
+        max_tasks_per_child=4,
+    ) as executor:
+        future_to_id = {}
+        for item in work_items:
+            f = executor.submit(_process_one, item)
+            future_to_id[f] = item[0].split('_')[0]
+
+        for future in concurrent.futures.as_completed(future_to_id, timeout=None):
             done += 1
-            if result == 'TIMEOUT':
+            eid = future_to_id[future]
+            try:
+                result = future.result(timeout=timeout)
+                if result is not None:
+                    entries.append(result)
+            except concurrent.futures.TimeoutError:
                 timed_out += 1
-            elif result is not None:
-                entries.append(result)
+                sys.stdout.write(f"    TIMEOUT: {eid}\n")
+            except Exception:
+                crashed += 1
+                sys.stdout.write(f"    CRASHED: {eid}\n")
+
             if done % 20 == 0 or done == len(work_items):
                 elapsed = time.time() - total_start
-                rate = done / elapsed
+                rate = done / elapsed if elapsed > 0 else 0
                 eta = (len(work_items) - done) / rate if rate > 0 else 0
-                timeout_str = f", {timed_out} timed out" if timed_out else ""
-                print(f"  [{done}/{len(work_items)}] {len(entries)} ok{timeout_str}, "
+                parts = [f"{len(entries)} ok"]
+                if timed_out:
+                    parts.append(f"{timed_out} timed out")
+                if crashed:
+                    parts.append(f"{crashed} crashed")
+                print(f"  [{done}/{len(work_items)}] {', '.join(parts)}, "
                       f"{elapsed:.1f}s elapsed, ~{eta:.0f}s remaining")
 
     elapsed = time.time() - total_start
-    timeout_str = f", {timed_out} timed out" if timed_out else ""
+    parts = []
+    if timed_out:
+        parts.append(f"{timed_out} timed out")
+    if crashed:
+        parts.append(f"{crashed} crashed")
+    extra = f" ({', '.join(parts)})" if parts else ""
     print(f"\nGenerated {len(entries)} outputs in {elapsed:.1f}s "
-          f"({len(entries)/elapsed:.1f} variants/sec{timeout_str})")
+          f"({len(entries)/elapsed:.1f} variants/sec{extra})")
 
-    # Sort by category then effect code for stable grouped order
     entries.sort(key=lambda e: (e['category'], e['effect_id'], e['filename']))
-    write_manifest(output_dir, entries)
-
     return entries
 
 
