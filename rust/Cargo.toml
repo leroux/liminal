@@ -23,3 +23,6 @@ nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
 [patch."https://github.com/robbert-vdh/nih-plug.git"]
 nih_plug = { path = "patches/nih-plug" }
 nih_plug_egui = { path = "patches/nih-plug/nih_plug_egui" }
+
+[patch."https://github.com/RustAudio/baseview.git"]
+baseview = { path = "patches/baseview" }
