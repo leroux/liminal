@@ -208,15 +208,17 @@ class LossyGUI:
         scroll_container = self._params_scroll_frame
 
         canvas = tk.Canvas(scroll_container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        vscrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        hscrollbar = ttk.Scrollbar(scroll_container, orient="horizontal", command=canvas.xview)
         f = ttk.Frame(canvas)
 
         f.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=f, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.configure(yscrollcommand=vscrollbar.set, xscrollcommand=hscrollbar.set)
 
+        hscrollbar.pack(side="bottom", fill="x")
         canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        vscrollbar.pack(side="right", fill="y")
 
         # Mouse wheel / trackpad scrolling for the page canvas
         def _on_mousewheel(event):
@@ -224,7 +226,10 @@ class LossyGUI:
             y = raw & 0xFFFF
             if y >= 0x8000:
                 y -= 0x10000
-            canvas.yview_scroll(-y, "units")
+            if event.state & 1:  # Shift held → horizontal scroll
+                canvas.xview_scroll(-y, "units")
+            else:
+                canvas.yview_scroll(-y, "units")
         canvas.bind("<MouseWheel>", _on_mousewheel)
         canvas.bind("<Button-4>", _on_mousewheel)
         canvas.bind("<Button-5>", _on_mousewheel)
