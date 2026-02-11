@@ -7,8 +7,12 @@ Signal chain:
 Bounce wraps the entire chain, modulating one parameter via LFO.
 
 All callers -- GUI, CLI, presets -- use render_fractal().
+
+When the Rust backend (fractal_rust) is installed, it is used automatically
+for a significant speed improvement. Falls back to the Python/Numba engine.
 """
 
+import json
 import numpy as np
 from fractal.engine.core import render_fractal_core
 from fractal.engine.filters import (
@@ -16,6 +20,14 @@ from fractal.engine.filters import (
     crush_and_decimate, noise_gate, limiter,
 )
 from fractal.engine.params import BOUNCE_TARGETS, PARAM_RANGES, SR
+
+# Try to import the Rust backend
+try:
+    from fractal_rust import render_fractal as _rust_render
+    from fractal_rust import render_fractal_stereo as _rust_render_stereo
+    _USE_RUST = True
+except ImportError:
+    _USE_RUST = False
 
 
 def _render_chain(dry, params):
@@ -74,6 +86,10 @@ def render_fractal(input_audio, params, chunk_callback=None, chunk_size=16384):
     """
     dry = input_audio.astype(np.float64)
 
+    # Fast path: use Rust backend when available and not streaming
+    if _USE_RUST and chunk_callback is None:
+        return _render_rust(dry, params)
+
     if chunk_callback is None:
         if dry.ndim == 2:
             channels = []
@@ -103,6 +119,17 @@ def render_fractal(input_audio, params, chunk_callback=None, chunk_size=16384):
                 break
 
     return output
+
+
+def _render_rust(dry, params):
+    """Dispatch to the Rust backend. Converts params dict to JSON."""
+    params_json = json.dumps(params)
+    if dry.ndim == 2:
+        left = np.ascontiguousarray(dry[:, 0])
+        right = np.ascontiguousarray(dry[:, 1]) if dry.shape[1] > 1 else left.copy()
+        out_l, out_r = _rust_render_stereo(left, right, params_json)
+        return np.column_stack([out_l, out_r])
+    return np.asarray(_rust_render(np.ascontiguousarray(dry), params_json))
 
 
 def _render_with_bounce(dry, params):
