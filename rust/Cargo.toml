@@ -5,6 +5,8 @@ members = [
     "crates/lossy-python",
     "crates/shared-dsp",
     "crates/lossy-plugin",
+    "crates/fractal-dsp",
+    "crates/fractal-plugin",
     "xtask",
 ]
 

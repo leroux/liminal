@@ -1,4 +1,4 @@
-name: Build Lossy Plugin
+name: Build Plugins
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - "rust/**"
       - "lossy/gui/presets/**"
+      - "fractal/gui/presets/**"
       - ".github/workflows/build-plugin.yml"
     tags:
       - "v*"
@@ -53,10 +54,13 @@ jobs:
             libxcb-xfixes0-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libatk1.0-dev libgtk-3-dev
 
-      - name: Bundle VST3 and CLAP
+      - name: Bundle lossy-plugin
         run: cargo xtask bundle lossy-plugin --release
 
-      - name: Upload artifacts
+      - name: Bundle fractal-plugin
+        run: cargo xtask bundle fractal-plugin --release
+
+      - name: Upload lossy artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lossy-plugin-${{ matrix.name }}
@@ -64,19 +68,30 @@ jobs:
             rust/target/bundled/lossy-plugin.vst3
             rust/target/bundled/lossy-plugin.clap
 
+      - name: Upload fractal artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fractal-plugin-${{ matrix.name }}
+          path: |
+            rust/target/bundled/fractal-plugin.vst3
+            rust/target/bundled/fractal-plugin.clap
+
       - name: Package for release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           cd target/bundled
           tar czf lossy-plugin-${{ matrix.name }}.tar.gz lossy-plugin.vst3 lossy-plugin.clap
+          tar czf fractal-plugin-${{ matrix.name }}.tar.gz fractal-plugin.vst3 fractal-plugin.clap
 
       - name: Upload release archive
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.name }}
-          path: rust/target/bundled/lossy-plugin-${{ matrix.name }}.tar.gz
+          path: |
+            rust/target/bundled/lossy-plugin-${{ matrix.name }}.tar.gz
+            rust/target/bundled/fractal-plugin-${{ matrix.name }}.tar.gz
 
   release:
     needs: build
