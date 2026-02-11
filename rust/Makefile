@@ -1,45 +1,84 @@
-# Lossy VST Plugin — build helpers
+# VST Plugins — build helpers
 # Usage:
-#   make          — release build + bundle (VST3 + CLAP)
-#   make install  — copy plugins to system plugin dirs (macOS)
-#   make run      — launch standalone
-#   make debug    — debug build + bundle
-#   make clean    — cargo clean
+#   make              — release build + bundle lossy (VST3 + CLAP)
+#   make install      — copy lossy plugins to system plugin dirs (macOS)
+#   make run          — launch lossy standalone
+#   make fractal      — release build + bundle fractal
+#   make install-fractal — copy fractal plugins to system plugin dirs
+#   make run-fractal  — launch fractal standalone
+#   make all-plugins  — build both lossy and fractal
+#   make install-all  — install both plugins
+#   make debug        — debug build + bundle lossy
+#   make clean        — cargo clean
 
 BUNDLE  := target/bundled
-PLUGIN  := lossy-plugin
+LOSSY   := lossy-plugin
+FRACTAL := fractal-plugin
 
 # macOS plugin install dirs
 VST3_DIR := $(HOME)/Library/Audio/Plug-Ins/VST3
 CLAP_DIR := $(HOME)/Library/Audio/Plug-Ins/CLAP
 
-.PHONY: all release debug install uninstall run clean
+.PHONY: all release debug install uninstall run clean \
+        fractal install-fractal uninstall-fractal run-fractal \
+        all-plugins install-all
 
 all: release
 
+# --- Lossy ---
 release:
-	cargo xtask bundle $(PLUGIN) --release
+	cargo xtask bundle $(LOSSY) --release
 
 debug:
-	cargo xtask bundle $(PLUGIN)
+	cargo xtask bundle $(LOSSY)
 
 install: release
 	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
 	@echo "Installing VST3 → $(VST3_DIR)"
-	@rm -rf "$(VST3_DIR)/$(PLUGIN).vst3"
-	@cp -r "$(BUNDLE)/$(PLUGIN).vst3" "$(VST3_DIR)/"
+	@rm -rf "$(VST3_DIR)/$(LOSSY).vst3"
+	@cp -r "$(BUNDLE)/$(LOSSY).vst3" "$(VST3_DIR)/"
 	@echo "Installing CLAP → $(CLAP_DIR)"
-	@rm -rf "$(CLAP_DIR)/$(PLUGIN).clap"
-	@cp -r "$(BUNDLE)/$(PLUGIN).clap" "$(CLAP_DIR)/"
+	@rm -rf "$(CLAP_DIR)/$(LOSSY).clap"
+	@cp -r "$(BUNDLE)/$(LOSSY).clap" "$(CLAP_DIR)/"
 	@echo "Done. Restart your DAW to pick up changes."
 
 uninstall:
-	rm -rf "$(VST3_DIR)/$(PLUGIN).vst3"
-	rm -rf "$(CLAP_DIR)/$(PLUGIN).clap"
-	@echo "Removed plugins. Restart your DAW."
+	rm -rf "$(VST3_DIR)/$(LOSSY).vst3"
+	rm -rf "$(CLAP_DIR)/$(LOSSY).clap"
+	@echo "Removed lossy plugins. Restart your DAW."
 
-run: debug
-	cargo run --bin lossy-standalone
+run: release
+	cargo run --release --bin lossy-standalone
+
+# --- Fractal ---
+fractal:
+	cargo xtask bundle $(FRACTAL) --release
+
+fractal-debug:
+	cargo xtask bundle $(FRACTAL)
+
+install-fractal: fractal
+	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
+	@echo "Installing VST3 → $(VST3_DIR)"
+	@rm -rf "$(VST3_DIR)/$(FRACTAL).vst3"
+	@cp -r "$(BUNDLE)/$(FRACTAL).vst3" "$(VST3_DIR)/"
+	@echo "Installing CLAP → $(CLAP_DIR)"
+	@rm -rf "$(CLAP_DIR)/$(FRACTAL).clap"
+	@cp -r "$(BUNDLE)/$(FRACTAL).clap" "$(CLAP_DIR)/"
+	@echo "Done. Restart your DAW to pick up changes."
+
+uninstall-fractal:
+	rm -rf "$(VST3_DIR)/$(FRACTAL).vst3"
+	rm -rf "$(CLAP_DIR)/$(FRACTAL).clap"
+	@echo "Removed fractal plugins. Restart your DAW."
+
+run-fractal: fractal
+	cargo run --release --bin fractal-standalone
+
+# --- Both ---
+all-plugins: release fractal
+
+install-all: install install-fractal
 
 clean:
 	cargo clean
