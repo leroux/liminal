@@ -19,10 +19,16 @@ jobs:
         include:
           - os: macos-latest
             name: macOS-arm64
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            name: macOS-x86_64
+            target: x86_64-apple-darwin
           - os: windows-latest
             name: Windows-x86_64
+            target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             name: Linux-x86_64
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -33,6 +39,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -55,10 +63,10 @@ jobs:
             libatk1.0-dev libgtk-3-dev
 
       - name: Bundle lossy-plugin
-        run: cargo xtask bundle lossy-plugin --release
+        run: cargo xtask bundle lossy-plugin --release --target ${{ matrix.target }}
 
       - name: Bundle fractal-plugin
-        run: cargo xtask bundle fractal-plugin --release
+        run: cargo xtask bundle fractal-plugin --release --target ${{ matrix.target }}
 
       - name: Upload lossy artifacts
         uses: actions/upload-artifact@v4
@@ -93,8 +101,68 @@ jobs:
             rust/target/bundled/lossy-plugin-${{ matrix.name }}.tar.gz
             rust/target/bundled/fractal-plugin-${{ matrix.name }}.tar.gz
 
-  release:
+  # Combine macOS arm64 + x86_64 into a universal binary
+  macos-universal:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    steps:
+      - name: Download macOS arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macOS-arm64
+          path: arm64
+
+      - name: Download macOS x86_64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-macOS-x86_64
+          path: x86_64
+
+      - name: Create universal binaries
+        run: |
+          mkdir -p universal
+          for plugin in lossy-plugin fractal-plugin; do
+            # Extract both architectures
+            mkdir -p arm64-ext x86_64-ext
+            tar xzf arm64/${plugin}-macOS-arm64.tar.gz -C arm64-ext
+            tar xzf x86_64/${plugin}-macOS-x86_64.tar.gz -C x86_64-ext
+
+            # Merge VST3 with lipo
+            cp -R arm64-ext/${plugin}.vst3 universal/${plugin}.vst3
+            arm_bin=$(find arm64-ext/${plugin}.vst3 -type f -perm +111 | head -1)
+            x86_bin=$(find x86_64-ext/${plugin}.vst3 -type f -perm +111 | head -1)
+            uni_bin=$(find universal/${plugin}.vst3 -type f -perm +111 | head -1)
+            if [ -n "$arm_bin" ] && [ -n "$x86_bin" ]; then
+              lipo -create "$arm_bin" "$x86_bin" -output "$uni_bin"
+            fi
+
+            # Merge CLAP with lipo
+            cp -R arm64-ext/${plugin}.clap universal/${plugin}.clap
+            arm_clap=$(find arm64-ext/${plugin}.clap -type f -perm +111 | head -1)
+            x86_clap=$(find x86_64-ext/${plugin}.clap -type f -perm +111 | head -1)
+            uni_clap=$(find universal/${plugin}.clap -type f -perm +111 | head -1)
+            if [ -n "$arm_clap" ] && [ -n "$x86_clap" ]; then
+              lipo -create "$arm_clap" "$x86_clap" -output "$uni_clap"
+            fi
+
+            rm -rf arm64-ext x86_64-ext
+          done
+
+          cd universal
+          tar czf lossy-plugin-macOS-universal.tar.gz lossy-plugin.vst3 lossy-plugin.clap
+          tar czf fractal-plugin-macOS-universal.tar.gz fractal-plugin.vst3 fractal-plugin.clap
+
+      - name: Upload universal archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macOS-universal
+          path: |
+            universal/lossy-plugin-macOS-universal.tar.gz
+            universal/fractal-plugin-macOS-universal.tar.gz
+
+  release:
+    needs: [build, macos-universal]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
