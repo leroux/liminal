@@ -32,10 +32,45 @@ TEST_SIGNALS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
                                 "audio", "test_signals")
 
 
+# --- Short always-visible descriptions for each slider ---
+SLIDER_DESCRIPTIONS = {
+    # Global
+    "feedback_gain": "0=dry  0.85=room  0.95+=long  >1.0=infinite",
+    "wet_dry": "0=dry only  0.5=equal  1.0=full wet",
+    "diffusion": "0=sharp attacks  0.5+=heavy smearing",
+    "saturation": "0=clean  0.3=warm  0.7+=distorted  tames >1.0 feedback",
+    "stereo_width": "0=mono  1=full stereo",
+    "pre_delay_ms": "0=intimate  20-50=room  100+=hall",
+    "tail_length": "rendered tail duration",
+    # Modulation
+    "mod_master_rate": "0=off  0.1=evolve  2=chorus  80+=FM",
+    "mod_depth_delay_global": "3-5=chorus  20+=pitch wobble",
+    "mod_depth_damping_global": "breathing bright/dark effect",
+    "mod_depth_output_global": "tremolo-like amplitude variation",
+    "mod_depth_matrix": "blend toward second matrix",
+    "mod_correlation": "1=synced  0=max spread (wider stereo)",
+}
+
+SECTION_DESCRIPTIONS = {
+    "Delay Times (ms)": "<15=small  50-80=room  long=hall  use prime-ish ratios",
+    "Damping (per node)": "0=bright  0.3=warm  0.7+=dark/muffled",
+    "Input Gains": "how much input feeds each node (default 0.125)",
+    "Output Gains": "0=silent  1=normal  >1=amplified",
+    "Node Pans (L/R)": "-1=left  0=center  1=right",
+    "Mod Rate Multipliers": "per-node LFO rate = master x multiplier",
+}
+
+
 class ReverbGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("FDN Reverb")
+        # Window / dock icon
+        _icon_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                                   "icons", "reverb.png")
+        if os.path.exists(_icon_path):
+            self._app_icon = tk.PhotoImage(file=_icon_path)
+            self.root.iconphoto(True, self._app_icon)
         self.params = default_params()
         self.source_audio = None
         self.source_path = None
@@ -64,6 +99,8 @@ class ReverbGUI:
         self._gen_history = []     # list of dicts: {params, audio, metrics, warning, spectrogram}
         self._gen_index = -1       # current position in history
         self._gen_max = 50         # max history entries
+        self._output_device_idx = None  # None = system default
+        self._output_devices = []       # [(sd_index, name), ...]
 
         default_source = os.path.join(TEST_SIGNALS_DIR, "dry_chords.wav")
         if os.path.exists(default_source):
@@ -109,6 +146,12 @@ class ReverbGUI:
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(top, textvariable=self.status_var, width=25, anchor="e").pack(side="right")
+        ttk.Button(top, text="\u21bb", width=2, command=self._refresh_devices).pack(side="right", padx=1)
+        self._device_combo = ttk.Combobox(top, state="readonly", width=28)
+        self._device_combo.pack(side="right", padx=2)
+        self._device_combo.bind("<<ComboboxSelected>>", self._on_device_changed)
+        ttk.Label(top, text="Output:").pack(side="right", padx=(5, 2))
+        self._refresh_devices()
 
         # Two pages: Params and Presets
         notebook = ttk.Notebook(self.root)
@@ -159,9 +202,11 @@ class ReverbGUI:
         scroll_container = self._params_scroll_frame
 
         scroll_canvas = tk.Canvas(scroll_container, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=scroll_canvas.yview)
-        scroll_canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
+        vscrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=scroll_canvas.yview)
+        hscrollbar = ttk.Scrollbar(scroll_container, orient="horizontal", command=scroll_canvas.xview)
+        scroll_canvas.configure(yscrollcommand=vscrollbar.set, xscrollcommand=hscrollbar.set)
+        hscrollbar.pack(side="bottom", fill="x")
+        vscrollbar.pack(side="right", fill="y")
         scroll_canvas.pack(side="left", fill="both", expand=True)
 
         inner = ttk.Frame(scroll_canvas)
@@ -177,7 +222,10 @@ class ReverbGUI:
             y = raw & 0xFFFF
             if y >= 0x8000:
                 y -= 0x10000
-            scroll_canvas.yview_scroll(-y, "units")
+            if event.state & 1:  # Shift held → horizontal scroll
+                scroll_canvas.xview_scroll(-y, "units")
+            else:
+                scroll_canvas.yview_scroll(-y, "units")
         scroll_canvas.bind("<MouseWheel>", _on_scroll_canvas_wheel)
         try:
             scroll_canvas.bind("<TouchpadScroll>", _on_scroll_canvas_wheel)
@@ -219,7 +267,11 @@ class ReverbGUI:
                                length=220)
 
         # Matrix type
-        ttk.Label(f, text="Matrix Topology:").grid(row=row, column=0, sticky="w", pady=2)
+        matrix_frame = ttk.Frame(f)
+        matrix_frame.grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(matrix_frame, text="Matrix Topology:", font=("TkDefaultFont", 0, "bold")).pack(anchor="w")
+        ttk.Label(matrix_frame, text="householder=smooth  hadamard=bright  diagonal=metallic",
+                  foreground="#888888", font=("Helvetica", 9)).pack(anchor="w")
         self.matrix_var = tk.StringVar(value=self.params.get("matrix_type", "householder"))
         topology_options = list(MATRIX_TYPES.keys()) + ["custom"]
         combo = ttk.Combobox(f, textvariable=self.matrix_var, values=topology_options,
@@ -318,7 +370,11 @@ class ReverbGUI:
         row = self._add_slider(f, row, "mod_correlation", "Correlation",
                                0.0, 1.0, 1.0, length=220)
 
-        ttk.Label(f, text="Mod Waveform:").grid(row=row, column=0, sticky="w", pady=2)
+        wf_frame = ttk.Frame(f)
+        wf_frame.grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Label(wf_frame, text="Mod Waveform:", font=("TkDefaultFont", 0, "bold")).pack(anchor="w")
+        ttk.Label(wf_frame, text="sine=smooth  triangle=linear  S&H=random",
+                  foreground="#888888", font=("Helvetica", 9)).pack(anchor="w")
         self.mod_waveform_var = tk.StringVar(value="sine")
         wf_combo = ttk.Combobox(f, textvariable=self.mod_waveform_var,
             values=["sine", "triangle", "sample_hold"], state="readonly", width=15)
@@ -345,7 +401,7 @@ class ReverbGUI:
         # ============ RIGHT COLUMN ============
         f = right
         row = 0
-        slider_len = 200
+        slider_len = 250
 
         # --- Per-node delay times ---
         row = self._section(f, row, "Delay Times (ms)")
@@ -1307,15 +1363,22 @@ class ReverbGUI:
         sep = ttk.Separator(parent, orient="horizontal")
         sep.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 2))
         header = ttk.Frame(parent)
-        header.grid(row=row+1, column=0, columnspan=4, sticky="w", pady=(0, 4))
-        ttk.Label(header, text=title, font=("TkDefaultFont", 0, "bold")).pack(side="left")
+        header.grid(row=row+1, column=0, columnspan=4, sticky="w", pady=(0, 1))
+        title_lbl = ttk.Label(header, text=title, font=("TkDefaultFont", 0, "bold"))
+        title_lbl.pack(side="left")
         if lockable:
             lock_var = tk.BooleanVar(value=False)
             self.section_locks[title] = lock_var
             ttk.Checkbutton(header, text="\U0001F512", variable=lock_var).pack(
                 side="left", padx=(6, 0))
+        next_row = row + 2
+        if title in SECTION_DESCRIPTIONS:
+            desc_lbl = ttk.Label(parent, text=SECTION_DESCRIPTIONS[title],
+                                 foreground="#888888", font=("Helvetica", 9))
+            desc_lbl.grid(row=next_row, column=0, columnspan=4, sticky="w", pady=(0, 3))
+            next_row += 1
         self._current_section = title
-        return row + 2
+        return next_row
 
     def _on_global_scroll(self, event):
         """Route mousewheel/touchpad scroll to the Scale widget under the cursor."""
@@ -1343,7 +1406,12 @@ class ReverbGUI:
         return f"{val:{fmt}}"
 
     def _add_slider(self, parent, row, key, label, from_, to_, value, length=350):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=1)
+        label_frame = ttk.Frame(parent)
+        label_frame.grid(row=row, column=0, sticky="w", pady=1)
+        ttk.Label(label_frame, text=label, font=("TkDefaultFont", 0, "bold")).pack(anchor="w")
+        if key in SLIDER_DESCRIPTIONS:
+            ttk.Label(label_frame, text=SLIDER_DESCRIPTIONS[key],
+                      foreground="#888888", font=("Helvetica", 9)).pack(anchor="w")
         var = tk.DoubleVar(value=value)
         # Frame holding [min_label | scale | max_label]
         slider_frame = ttk.Frame(parent)
@@ -1989,10 +2057,42 @@ class ReverbGUI:
         threading.Thread(target=do_render, daemon=True).start()
 
     def _play_audio(self, audio):
-        """Play audio through the current default output device."""
+        """Play audio through the selected output device."""
         sd.default.reset()
-        sd.play(audio, SR)
+        sd.play(audio, SR, device=self._output_device_idx)
         self._start_cursor(audio, self._output_canvases())
+
+    # ------------------------------------------------------------------
+    # Output device selection
+    # ------------------------------------------------------------------
+
+    def _get_output_devices(self):
+        devices = sd.query_devices()
+        out = []
+        for i, d in enumerate(devices):
+            if d['max_output_channels'] > 0:
+                out.append((i, d['name']))
+        return out
+
+    def _refresh_devices(self):
+        devs = self._get_output_devices()
+        self._output_devices = devs
+        names = ["System Default"] + [name for _, name in devs]
+        self._device_combo['values'] = names
+        if self._output_device_idx is not None:
+            for i, (idx, _) in enumerate(devs):
+                if idx == self._output_device_idx:
+                    self._device_combo.current(i + 1)
+                    return
+        self._output_device_idx = None
+        self._device_combo.current(0)
+
+    def _on_device_changed(self, event=None):
+        sel = self._device_combo.current()
+        if sel <= 0:
+            self._output_device_idx = None
+        else:
+            self._output_device_idx = self._output_devices[sel - 1][0]
 
     # ------------------------------------------------------------------
     # Playback cursor & seek
@@ -2072,7 +2172,7 @@ class ReverbGUI:
         sample = int(frac * len(audio))
         sd.stop()
         sd.default.reset()
-        sd.play(audio[sample:], SR)
+        sd.play(audio[sample:], SR, device=self._output_device_idx)
         self._start_cursor(audio, canvases)
         # Adjust start time so cursor begins at the seek position
         self._playback_start = time.time() - frac * self._playback_length
@@ -2109,7 +2209,7 @@ class ReverbGUI:
         self._stop_cursor()
         audio = self.source_audio.astype(np.float32)
         sd.default.reset()
-        sd.play(audio, SR)
+        sd.play(audio, SR, device=self._output_device_idx)
         self._start_cursor(audio, self._input_canvases())
         self.status_var.set("Playing dry...")
 
@@ -2321,7 +2421,7 @@ class ReverbGUI:
 
 def main():
     root = tk.Tk()
-    root.geometry("1050x850")
+    root.geometry("1250x950")
     ReverbGUI(root)
     root.mainloop()
 

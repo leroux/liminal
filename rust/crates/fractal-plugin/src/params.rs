@@ -95,6 +95,36 @@ pub struct FractalPluginParams {
     #[id = "decimate"]
     pub decimate: FloatParam,
 
+    // --- Layers ---
+    #[id = "layer_gain_1"]
+    pub layer_gain_1: FloatParam,
+    #[id = "layer_gain_2"]
+    pub layer_gain_2: FloatParam,
+    #[id = "layer_gain_3"]
+    pub layer_gain_3: FloatParam,
+    #[id = "layer_gain_4"]
+    pub layer_gain_4: FloatParam,
+    #[id = "layer_gain_5"]
+    pub layer_gain_5: FloatParam,
+    #[id = "layer_gain_6"]
+    pub layer_gain_6: FloatParam,
+    #[id = "layer_gain_7"]
+    pub layer_gain_7: FloatParam,
+    #[id = "fractal_only_wet"]
+    pub fractal_only_wet: BoolParam,
+    #[id = "layer_spread"]
+    pub layer_spread: FloatParam,
+    #[id = "layer_detune"]
+    pub layer_detune: FloatParam,
+    #[id = "layer_delay"]
+    pub layer_delay: FloatParam,
+    #[id = "layer_tilt"]
+    pub layer_tilt: FloatParam,
+
+    // --- Feedback ---
+    #[id = "feedback"]
+    pub feedback: FloatParam,
+
     // --- Output ---
     #[id = "wet_dry"]
     pub wet_dry: FloatParam,
@@ -107,7 +137,7 @@ pub struct FractalPluginParams {
 impl Default for FractalPluginParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(600, 720),
+            editor_state: EguiState::from_size(600, 820),
 
             // --- Core Fractal ---
             num_scales: IntParam::new("Scales", 3, IntRange::Linear { min: 2, max: 8 }),
@@ -198,6 +228,71 @@ impl Default for FractalPluginParams {
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             ),
 
+            // --- Layers ---
+            layer_gain_1: FloatParam::new(
+                "Layer 1 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            layer_gain_2: FloatParam::new(
+                "Layer 2 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            layer_gain_3: FloatParam::new(
+                "Layer 3 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            layer_gain_4: FloatParam::new(
+                "Layer 4 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            layer_gain_5: FloatParam::new(
+                "Layer 5 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            layer_gain_6: FloatParam::new(
+                "Layer 6 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            layer_gain_7: FloatParam::new(
+                "Layer 7 Gain",
+                1.0,
+                FloatRange::Linear { min: 0.0, max: 2.0 },
+            ),
+            fractal_only_wet: BoolParam::new("Only Wet", false),
+            layer_spread: FloatParam::new(
+                "Spread",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            ),
+            layer_detune: FloatParam::new(
+                "Detune",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            ),
+            layer_delay: FloatParam::new(
+                "Layer Delay",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            ),
+            layer_tilt: FloatParam::new(
+                "Tilt",
+                0.0,
+                FloatRange::Linear { min: -1.0, max: 1.0 },
+            ),
+
+            // --- Feedback ---
+            feedback: FloatParam::new(
+                "Feedback",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 0.95 },
+            ),
+
             // --- Output ---
             wet_dry: FloatParam::new("Wet/Dry", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             output_gain: FloatParam::new(
@@ -237,6 +332,19 @@ impl FractalPluginParams {
             gate: self.gate.value() as f64,
             crush: self.crush.value() as f64,
             decimate: self.decimate.value() as f64,
+            layer_gain_1: self.layer_gain_1.value() as f64,
+            layer_gain_2: self.layer_gain_2.value() as f64,
+            layer_gain_3: self.layer_gain_3.value() as f64,
+            layer_gain_4: self.layer_gain_4.value() as f64,
+            layer_gain_5: self.layer_gain_5.value() as f64,
+            layer_gain_6: self.layer_gain_6.value() as f64,
+            layer_gain_7: self.layer_gain_7.value() as f64,
+            fractal_only_wet: if self.fractal_only_wet.value() { 1 } else { 0 },
+            layer_spread: self.layer_spread.value() as f64,
+            layer_detune: self.layer_detune.value() as f64,
+            layer_delay: self.layer_delay.value() as f64,
+            layer_tilt: self.layer_tilt.value() as f64,
+            feedback: self.feedback.value() as f64,
             bounce: 0,
             bounce_target: 0,
             bounce_rate: 0.3,

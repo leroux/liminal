@@ -34,7 +34,7 @@ from fractal.engine.fractal import render_fractal
 
 from shared.llm_guide_text import FRACTAL_GUIDE, FRACTAL_PARAM_DESCRIPTIONS
 from shared.llm_tuner import LLMTuner
-from shared.streaming import safety_check, normalize_output
+from shared.streaming import safety_check
 from shared.waveform import (draw_waveform as _shared_draw_waveform, draw_spectrogram,
                               WAVE_PAD_LEFT, WAVE_PAD_RIGHT,
                               SPEC_PAD_LEFT, SPEC_PAD_RIGHT)
@@ -54,6 +54,12 @@ class FractalGUI:
         self.root = root
         self.root.title("Fractal — audio fractalization")
         self.root.geometry("900x680")
+        # Window / dock icon
+        _icon_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                                   "icons", "fractal.png")
+        if os.path.exists(_icon_path):
+            self._app_icon = tk.PhotoImage(file=_icon_path)
+            self.root.iconphoto(True, self._app_icon)
         self.params = default_params()
         self.source_audio = None
         self.rendered_audio = None
@@ -76,6 +82,8 @@ class FractalGUI:
         self._gen_history = []
         self._gen_index = -1
         self._gen_max = 50
+        self._output_device_idx = None  # None = system default
+        self._output_devices = []       # [(sd_index, name), ...]
         self._load_wav(DEFAULT_SOURCE)
         self._build_ui()
 
@@ -161,6 +169,12 @@ class FractalGUI:
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(top, textvariable=self.status_var).pack(side="right")
+        ttk.Button(top, text="\u21bb", width=2, command=self._refresh_devices).pack(side="right", padx=1)
+        self._device_combo = ttk.Combobox(top, state="readonly", width=28)
+        self._device_combo.pack(side="right", padx=2)
+        self._device_combo.bind("<<ComboboxSelected>>", self._on_device_changed)
+        ttk.Label(top, text="Output:").pack(side="right", padx=(5, 2))
+        self._refresh_devices()
 
         # Notebook
         nb = ttk.Notebook(self.root)
@@ -254,6 +268,24 @@ class FractalGUI:
         self._add_lock(f, r, "reverse_scales")
         r += 1
 
+        # ---- Layers ----
+        r = self._add_separator(f, r)
+        r = self._add_section_header(f, r, "layers", "LAYERS")
+
+        for lg in range(1, 8):
+            key = f"layer_gain_{lg}"
+            r = self._add_slider(f, r, key, f"Layer {lg} Gain", 0.0, 2.0, self.params[key], length=SL)
+
+        self._only_wet_var = tk.IntVar(value=self.params["fractal_only_wet"])
+        ttk.Checkbutton(f, text="Fractal Only Wet", variable=self._only_wet_var).grid(row=r, column=0, columnspan=2, sticky="w", padx=8)
+        self._add_lock(f, r, "fractal_only_wet")
+        r += 1
+
+        r = self._add_slider(f, r, "layer_spread", "Spread", 0.0, 1.0, self.params["layer_spread"], length=SL)
+        r = self._add_slider(f, r, "layer_detune", "Detune", 0.0, 1.0, self.params["layer_detune"], length=SL)
+        r = self._add_slider(f, r, "layer_delay", "Layer Delay", 0.0, 1.0, self.params["layer_delay"], length=SL)
+        r = self._add_slider(f, r, "layer_tilt", "Tilt", -1.0, 1.0, self.params["layer_tilt"], length=SL)
+
         # ---- Iteration / Feedback ----
         r = self._add_separator(f, r)
         r = self._add_section_header(f, r, "iteration", "ITERATION")
@@ -261,6 +293,7 @@ class FractalGUI:
         r = self._add_slider(f, r, "iterations", "Iterations", 1, 4, self.params["iterations"], length=SL, integer=True)
         r = self._add_slider(f, r, "iter_decay", "Iter Decay", 0.3, 1.0, self.params["iter_decay"], length=SL)
         r = self._add_slider(f, r, "saturation", "Saturation", 0.0, 1.0, self.params["saturation"], length=SL)
+        r = self._add_slider(f, r, "feedback", "Feedback", 0.0, 0.95, self.params["feedback"], length=SL)
 
         # ---- Spectral Fractal ----
         r = self._add_separator(f, r)
@@ -337,7 +370,8 @@ class FractalGUI:
 
         # Auto-play on discrete parameter change
         for var in [self._interp_var, self._reverse_var, self._filter_var,
-                    self._post_filter_var, self._bounce_var, self._bounce_target_var]:
+                    self._post_filter_var, self._bounce_var, self._bounce_target_var,
+                    self._only_wet_var]:
             var.trace_add("write", lambda *_: self._schedule_autoplay())
 
         # AI Tuner
@@ -645,19 +679,33 @@ class FractalGUI:
         if self._params_changed(params):
             self._on_play()
 
+    # Mix/output params that should NOT be randomized (they bury the effect)
+    _RANDOMIZE_SKIP = {"wet_dry", "output_gain", "threshold", "tail_length"}
+    # Clamp destructive params to sane ranges during randomize
+    _RANDOMIZE_CLAMP = {
+        "gate": (0.0, 0.3),
+        "crush": (0.0, 0.7),
+        "decimate": (0.0, 0.5),
+        "filter_freq": (80.0, 8000.0),
+        "post_filter_freq": (200.0, 16000.0),
+    }
+
     def _randomize_params(self):
         for key, (lo, hi) in PARAM_RANGES.items():
+            if key in self._RANDOMIZE_SKIP:
+                continue
             if key in self.locks and self.locks[key].get():
                 continue
             if key not in self.sliders:
                 continue
+            r_lo, r_hi = self._RANDOMIZE_CLAMP.get(key, (lo, hi))
             if hasattr(self.sliders[key], '_integer') and self.sliders[key]._integer:
-                val = random.randint(int(lo), int(hi))
+                val = random.randint(int(r_lo), int(r_hi))
             elif hasattr(self.sliders[key], '_log') and self.sliders[key]._log:
-                val = 10 ** random.uniform(math.log10(max(lo, 1e-10)),
-                                           math.log10(max(hi, 1e-10)))
+                val = 10 ** random.uniform(math.log10(max(r_lo, 1e-10)),
+                                           math.log10(max(r_hi, 1e-10)))
             else:
-                val = random.uniform(lo, hi)
+                val = random.uniform(r_lo, r_hi)
             self.sliders[key].set(val)
         var_map = {
             "interp": self._interp_var,
@@ -666,6 +714,7 @@ class FractalGUI:
             "post_filter_type": self._post_filter_var,
             "bounce": self._bounce_var,
             "bounce_target": self._bounce_target_var,
+            "fractal_only_wet": self._only_wet_var,
         }
         for key, num_choices in CHOICE_RANGES.items():
             if key in self.locks and self.locks[key].get():
@@ -1196,6 +1245,7 @@ class FractalGUI:
         p["post_filter_type"] = self._post_filter_var.get()
         p["bounce"] = self._bounce_var.get()
         p["bounce_target"] = self._bounce_target_var.get()
+        p["fractal_only_wet"] = self._only_wet_var.get()
         for key, var in self.sliders.items():
             p[key] = var.get()
         return p
@@ -1207,6 +1257,7 @@ class FractalGUI:
         self._post_filter_var.set(p.get("post_filter_type", 0))
         self._bounce_var.set(p.get("bounce", 0))
         self._bounce_target_var.set(p.get("bounce_target", 0))
+        self._only_wet_var.set(p.get("fractal_only_wet", 0))
         for key, var in self.sliders.items():
             if key in p:
                 var.set(p[key])
@@ -1320,7 +1371,7 @@ class FractalGUI:
         sample = int(frac * len(audio))
         sd.stop()
         sd.default.reset()
-        sd.play(audio[sample:], SR)
+        sd.play(audio[sample:], SR, device=self._output_device_idx)
         self._start_cursor(audio, canvases)
         self._playback_start = time.time() - frac * self._playback_length
 
@@ -1337,7 +1388,7 @@ class FractalGUI:
             sd.stop()
             self._stop_cursor()
             sd.default.reset()
-            sd.play(self.rendered_audio, SR)
+            sd.play(self.rendered_audio, SR, device=self._output_device_idx)
             self._start_cursor(self.rendered_audio, self._output_canvases())
             dur = len(self.rendered_audio) / SR
             self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
@@ -1439,7 +1490,12 @@ class FractalGUI:
                     self.root.after(0, lambda: self.status_var.set(err))
                     return
 
-                output, warning = normalize_output(output)
+                # Peak-cap at 1.0 for playback safety (all real DSP is in Rust)
+                peak = np.max(np.abs(output))
+                warning = ""
+                if peak > 1.0:
+                    output = output / peak * 0.95
+                    warning = f" (clipped {peak:.1f}x)"
 
                 from shared.analysis import analyze
                 from shared.audio_features import generate_spectrogram_png
@@ -1477,16 +1533,48 @@ class FractalGUI:
     def _play_rendered(self):
         if self.rendered_audio is not None:
             sd.default.reset()
-            sd.play(self.rendered_audio, SR)
+            sd.play(self.rendered_audio, SR, device=self._output_device_idx)
             self._start_cursor(self.rendered_audio, self._output_canvases())
             self.status_var.set("Playing...")
 
     def _on_play_dry(self):
         if self.source_audio is not None:
             sd.default.reset()
-            sd.play(self.source_audio, SR)
+            sd.play(self.source_audio, SR, device=self._output_device_idx)
             self._start_cursor(self.source_audio, self._input_canvases())
             self.status_var.set("Playing dry...")
+
+    # ------------------------------------------------------------------
+    # Output device selection
+    # ------------------------------------------------------------------
+
+    def _get_output_devices(self):
+        devices = sd.query_devices()
+        out = []
+        for i, d in enumerate(devices):
+            if d['max_output_channels'] > 0:
+                out.append((i, d['name']))
+        return out
+
+    def _refresh_devices(self):
+        devs = self._get_output_devices()
+        self._output_devices = devs
+        names = ["System Default"] + [name for _, name in devs]
+        self._device_combo['values'] = names
+        if self._output_device_idx is not None:
+            for i, (idx, _) in enumerate(devs):
+                if idx == self._output_device_idx:
+                    self._device_combo.current(i + 1)
+                    return
+        self._output_device_idx = None
+        self._device_combo.current(0)
+
+    def _on_device_changed(self, event=None):
+        sel = self._device_combo.current()
+        if sel <= 0:
+            self._output_device_idx = None
+        else:
+            self._output_device_idx = self._output_devices[sel - 1][0]
 
     def _on_stop(self):
         if self._autoplay_id is not None:

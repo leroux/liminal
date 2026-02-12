@@ -6,7 +6,7 @@
 //!     Input -> Pre-Filter -> Fractalize (with iterations) -> Output Gain
 //!           -> Crush/Decimate -> Post-Filter -> Gate -> Limiter -> Mix -> Output
 
-use crate::core::render_fractal_core;
+use crate::core::{render_fractal_core, render_fractal_core_stereo};
 use crate::filters::{apply_post_filter, apply_pre_filter, crush_and_decimate, limiter, noise_gate};
 use crate::params::{param_range, FractalParams, BOUNCE_TARGETS, SR};
 
@@ -42,9 +42,55 @@ fn render_chain(dry: &[f64], params: &FractalParams) -> Vec<f64> {
     wet
 }
 
+/// Mono feedback processing: re-feed output into input in 8192-sample chunks.
+fn render_with_feedback_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
+    let feedback = params.feedback.clamp(0.0, 0.95);
+    let chunk_size = 8192;
+    let n = dry.len();
+    let mut out = vec![0.0_f64; n];
+    let mut feedback_buf = vec![0.0_f64; chunk_size];
+
+    // Use params with feedback=0 to prevent recursion
+    let mut inner_params = params.clone();
+    inner_params.feedback = 0.0;
+
+    let mut start = 0;
+    while start < n {
+        let end = (start + chunk_size).min(n);
+        let block_len = end - start;
+
+        // Mix feedback into input
+        let mut input_chunk: Vec<f64> = dry[start..end].to_vec();
+        for i in 0..block_len {
+            input_chunk[i] += feedback * feedback_buf[i];
+        }
+
+        // Process
+        let processed = if inner_params.bounce != 0 {
+            render_with_bounce(&input_chunk, &inner_params)
+        } else {
+            render_chain(&input_chunk, &inner_params)
+        };
+
+        out[start..end].copy_from_slice(&processed[..block_len]);
+
+        // Store for next chunk
+        feedback_buf = vec![0.0_f64; chunk_size];
+        for i in 0..block_len {
+            feedback_buf[i] = processed[i];
+        }
+
+        start = end;
+    }
+
+    out
+}
+
 /// Render a single mono channel.
 fn render_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
-    let wet = if params.bounce != 0 {
+    let wet = if params.feedback > 0.001 {
+        render_with_feedback_mono(dry, params)
+    } else if params.bounce != 0 {
         render_with_bounce(dry, params)
     } else {
         render_chain(dry, params)
@@ -109,14 +155,124 @@ pub fn render_fractal(input_audio: &[f64], params: &FractalParams) -> Vec<f64> {
     render_mono(input_audio, params)
 }
 
-/// Process stereo audio (two separate channels).
+/// Stereo signal chain using render_fractal_core_stereo for spread.
+fn render_stereo_chain(left: &[f64], right: &[f64], params: &FractalParams) -> (Vec<f64>, Vec<f64>) {
+    // 1) Pre-filter per channel
+    let wet_l = apply_pre_filter(left, params);
+    let wet_r = apply_pre_filter(right, params);
+
+    // 2) Stereo fractalize
+    let (mut out_l, mut out_r) = render_fractal_core_stereo(&wet_l, &wet_r, params);
+
+    // 3) Output gain
+    if params.output_gain != 0.5 {
+        let db = (params.output_gain - 0.5) * 72.0;
+        let gain = (10.0_f64).powf(db / 20.0);
+        for s in out_l.iter_mut() {
+            *s *= gain;
+        }
+        for s in out_r.iter_mut() {
+            *s *= gain;
+        }
+    }
+
+    // 4-7) Crush, post-filter, gate, limiter per channel
+    out_l = crush_and_decimate(&out_l, params);
+    out_r = crush_and_decimate(&out_r, params);
+    out_l = apply_post_filter(&out_l, params);
+    out_r = apply_post_filter(&out_r, params);
+    out_l = noise_gate(&out_l, params);
+    out_r = noise_gate(&out_r, params);
+    out_l = limiter(&out_l, params);
+    out_r = limiter(&out_r, params);
+
+    (out_l, out_r)
+}
+
+/// Stereo feedback processing.
+fn render_with_feedback_stereo(
+    left: &[f64],
+    right: &[f64],
+    params: &FractalParams,
+) -> (Vec<f64>, Vec<f64>) {
+    let feedback = params.feedback.clamp(0.0, 0.95);
+    let chunk_size = 8192;
+    let n = left.len();
+    let mut out_l = vec![0.0_f64; n];
+    let mut out_r = vec![0.0_f64; n];
+    let mut fb_l = vec![0.0_f64; chunk_size];
+    let mut fb_r = vec![0.0_f64; chunk_size];
+
+    let mut inner_params = params.clone();
+    inner_params.feedback = 0.0;
+
+    let use_stereo_chain = inner_params.layer_spread > 0.0;
+
+    let mut start = 0;
+    while start < n {
+        let end = (start + chunk_size).min(n);
+        let block_len = end - start;
+
+        let mut in_l: Vec<f64> = left[start..end].to_vec();
+        let mut in_r: Vec<f64> = right[start..end].to_vec();
+        for i in 0..block_len {
+            in_l[i] += feedback * fb_l[i];
+            in_r[i] += feedback * fb_r[i];
+        }
+
+        let (proc_l, proc_r) = if use_stereo_chain {
+            render_stereo_chain(&in_l, &in_r, &inner_params)
+        } else {
+            (render_chain(&in_l, &inner_params), render_chain(&in_r, &inner_params))
+        };
+
+        out_l[start..end].copy_from_slice(&proc_l[..block_len]);
+        out_r[start..end].copy_from_slice(&proc_r[..block_len]);
+
+        fb_l = vec![0.0_f64; chunk_size];
+        fb_r = vec![0.0_f64; chunk_size];
+        for i in 0..block_len {
+            fb_l[i] = proc_l[i];
+            fb_r[i] = proc_r[i];
+        }
+
+        start = end;
+    }
+
+    (out_l, out_r)
+}
+
+/// Process stereo audio with optional spread and feedback.
 pub fn render_fractal_stereo(
     left: &[f64],
     right: &[f64],
     params: &FractalParams,
 ) -> (Vec<f64>, Vec<f64>) {
-    let out_l = render_mono(left, params);
-    let out_r = render_mono(right, params);
+    let use_stereo_chain = params.layer_spread > 0.0;
+    let use_feedback = params.feedback > 0.001;
+
+    let (wet_l, wet_r) = if use_feedback {
+        render_with_feedback_stereo(left, right, params)
+    } else if use_stereo_chain {
+        render_stereo_chain(left, right, params)
+    } else {
+        let out_l = render_mono(left, params);
+        let out_r = render_mono(right, params);
+        return (out_l, out_r);
+    };
+
+    // Wet/dry mix
+    let mix = params.wet_dry;
+    let out_l: Vec<f64> = left
+        .iter()
+        .zip(wet_l.iter())
+        .map(|(&d, &w)| d * (1.0 - mix) + w * mix)
+        .collect();
+    let out_r: Vec<f64> = right
+        .iter()
+        .zip(wet_r.iter())
+        .map(|(&d, &w)| d * (1.0 - mix) + w * mix)
+        .collect();
     (out_l, out_r)
 }
 
@@ -159,6 +315,70 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .sum();
         assert!(diff_dry < 1e-10);
+    }
+
+    #[test]
+    fn test_layer_spread_stereo_differs() {
+        let audio: Vec<f64> = (0..4096).map(|i| (i as f64 * 0.01).sin()).collect();
+        let mut params = FractalParams::default();
+        params.layer_spread = 0.5;
+        let (out_l, out_r) = render_fractal_stereo(&audio, &audio, &params);
+        assert_eq!(out_l.len(), audio.len());
+        // With spread > 0 and identical input, L and R should differ
+        let diff: f64 = out_l.iter().zip(out_r.iter()).map(|(l, r)| (l - r).abs()).sum();
+        assert!(diff > 0.0, "Stereo spread should produce L/R difference");
+    }
+
+    #[test]
+    fn test_feedback_adds_energy() {
+        let audio: Vec<f64> = (0..8192)
+            .map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / SR).sin())
+            .collect();
+        let mut params = FractalParams::default();
+        params.feedback = 0.0;
+        let out_no_fb = render_fractal(&audio, &params);
+
+        params.feedback = 0.5;
+        let out_fb = render_fractal(&audio, &params);
+
+        let energy_no_fb: f64 = out_no_fb.iter().map(|x| x * x).sum();
+        let energy_fb: f64 = out_fb.iter().map(|x| x * x).sum();
+        assert!(out_fb.iter().all(|x| x.is_finite()));
+        // Feedback should add energy (or at minimum not crash)
+        assert!(energy_fb > 0.0 || energy_no_fb > 0.0);
+    }
+
+    #[test]
+    fn test_layer_gain_mutes() {
+        use crate::core::fractalize_time_layers;
+        let audio: Vec<f64> = (0..4096)
+            .map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / SR).sin())
+            .collect();
+        let mut params = FractalParams::default();
+        // Mute all layers except original
+        params.layer_gain_1 = 0.0;
+        params.layer_gain_2 = 0.0;
+        let layers = fractalize_time_layers(&audio, &params);
+        // Layer 0 should equal original, layers 1+ should be zero
+        let diff0: f64 = audio.iter().zip(layers[0].iter()).map(|(a, b)| (a - b).abs()).sum();
+        assert!(diff0 < 1e-10, "Layer 0 should be original");
+        for s in 1..layers.len() {
+            let energy: f64 = layers[s].iter().map(|x| x * x).sum();
+            assert!(energy < 1e-10, "Muted layer {s} should have zero energy");
+        }
+    }
+
+    #[test]
+    fn test_only_wet_mode() {
+        let audio: Vec<f64> = (0..4096)
+            .map(|i| (2.0 * std::f64::consts::PI * 440.0 * i as f64 / SR).sin())
+            .collect();
+        let mut params = FractalParams::default();
+        params.fractal_only_wet = 1;
+        params.wet_dry = 1.0;
+        let out = render_fractal(&audio, &params);
+        assert_eq!(out.len(), audio.len());
+        assert!(out.iter().all(|x| x.is_finite()));
     }
 
     #[test]

@@ -25,6 +25,8 @@ pub struct FractalPlugin {
     input_buf: [Vec<f64>; 2],
     /// Per-channel output drain buffer (processed audio waiting to be sent).
     output_buf: [Vec<f64>; 2],
+    /// Per-channel feedback buffer from previous block.
+    feedback_buf: [Vec<f64>; 2],
     /// Write position into input_buf.
     in_pos: usize,
     /// Read position from output_buf.
@@ -42,6 +44,7 @@ impl Default for FractalPlugin {
             sample_rate: 44100.0,
             input_buf: [vec![0.0; PROCESS_BLOCK], vec![0.0; PROCESS_BLOCK]],
             output_buf: [vec![0.0; PROCESS_BLOCK], vec![0.0; PROCESS_BLOCK]],
+            feedback_buf: [vec![0.0; PROCESS_BLOCK], vec![0.0; PROCESS_BLOCK]],
             in_pos: 0,
             out_pos: 0,
             out_avail: 0,
@@ -56,13 +59,31 @@ impl FractalPlugin {
     }
 
     fn process_block(&mut self) {
-        let dsp_params = self.build_dsp_params();
+        let mut dsp_params = self.build_dsp_params();
+        let feedback = dsp_params.feedback.clamp(0.0, 0.95);
+
+        // Mix feedback into input if active
+        if feedback > 0.001 {
+            for ch in 0..2 {
+                for i in 0..PROCESS_BLOCK {
+                    self.input_buf[ch][i] += feedback * self.feedback_buf[ch][i];
+                }
+            }
+            // Prevent double-application in DSP chain
+            dsp_params.feedback = 0.0;
+        }
 
         let (out_l, out_r) = fractal_dsp::render_fractal_stereo(
             &self.input_buf[0],
             &self.input_buf[1],
             &dsp_params,
         );
+
+        // Store output as feedback for next block
+        if feedback > 0.001 {
+            self.feedback_buf[0] = out_l.clone();
+            self.feedback_buf[1] = out_r.clone();
+        }
 
         self.output_buf[0] = out_l;
         self.output_buf[1] = out_r;
@@ -114,6 +135,9 @@ impl Plugin for FractalPlugin {
             buf.fill(0.0);
         }
         for buf in &mut self.output_buf {
+            buf.fill(0.0);
+        }
+        for buf in &mut self.feedback_buf {
             buf.fill(0.0);
         }
         self.in_pos = 0;

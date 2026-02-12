@@ -131,3 +131,67 @@ PARAM_RANGES = {
     "mod_rate_scale_output": (0.01, 10.0),
     "mod_rate_matrix": (0.0, 1000.0),
 }
+
+# Section groupings for GUI layout and lock feature
+PARAM_SECTIONS = {
+    "global": ["feedback_gain", "wet_dry", "diffusion", "saturation",
+               "stereo_width", "pre_delay"],
+    "matrix": ["matrix_type", "matrix_seed"],
+    "modulation": ["mod_master_rate", "mod_depth_delay", "mod_depth_damping",
+                   "mod_depth_output", "mod_depth_matrix", "mod_correlation",
+                   "mod_waveform", "mod_node_rate_mult",
+                   "mod_rate_scale_delay", "mod_rate_scale_damping",
+                   "mod_rate_scale_output", "mod_rate_matrix",
+                   "mod_matrix2_type", "mod_matrix2_seed"],
+    "delay_times": ["delay_times"],
+    "damping": ["damping_coeffs"],
+    "input_gains": ["input_gains"],
+    "output_gains": ["output_gains"],
+    "node_pans": ["node_pans"],
+}
+
+# Integer/choice parameter value counts (for randomization)
+CHOICE_RANGES = {
+    "mod_waveform": 3,          # sine, triangle, sample_hold
+    "diffusion_stages": 4,      # 1-4
+}
+
+
+def bypass_params():
+    """All params at their no-effect / clean position (dry pass-through)."""
+    return {
+        "delay_times": [int(29.7 / 1000 * SR)] * 8,
+        "damping_coeffs": [0.0] * 8,
+        "feedback_gain": 0.0,
+        "input_gains": [1.0 / 8] * 8,
+        "output_gains": [1.0] * 8,
+        "pre_delay": 0,
+        "diffusion": 0.0,
+        "diffusion_stages": 4,
+        "diffusion_delays": [
+            int(5.3 / 1000 * SR),
+            int(7.9 / 1000 * SR),
+            int(11.7 / 1000 * SR),
+            int(16.1 / 1000 * SR),
+        ],
+        "wet_dry": 0.0,
+        "saturation": 0.0,
+        "matrix_type": "householder",
+        "matrix_seed": 42,
+        "node_pans": [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0],
+        "stereo_width": 1.0,
+        "mod_master_rate": 0.0,
+        "mod_node_rate_mult": [1.0] * 8,
+        "mod_correlation": 1.0,
+        "mod_waveform": 0,
+        "mod_depth_delay": [0.0] * 8,
+        "mod_depth_damping": [0.0] * 8,
+        "mod_depth_output": [0.0] * 8,
+        "mod_depth_matrix": 0.0,
+        "mod_rate_scale_delay": 1.0,
+        "mod_rate_scale_damping": 1.0,
+        "mod_rate_scale_output": 1.0,
+        "mod_rate_matrix": 0.0,
+        "mod_matrix2_type": "random_orthogonal",
+        "mod_matrix2_seed": 137,
+    }

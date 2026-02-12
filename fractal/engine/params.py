@@ -54,6 +54,21 @@ def default_params():
         "crush": 0.0,               # 0.0-1.0 bitcrusher
         "decimate": 0.0,            # 0.0-1.0 sample rate reduction
 
+        # --- Layers ---
+        "layer_gain_1": 1.0,        # 0.0-2.0 per-layer gain for scale 1
+        "layer_gain_2": 1.0,        # 0.0-2.0 per-layer gain for scale 2
+        "layer_gain_3": 1.0,        # 0.0-2.0 per-layer gain for scale 3
+        "layer_gain_4": 1.0,        # 0.0-2.0 per-layer gain for scale 4
+        "layer_gain_5": 1.0,        # 0.0-2.0 per-layer gain for scale 5
+        "layer_gain_6": 1.0,        # 0.0-2.0 per-layer gain for scale 6
+        "layer_gain_7": 1.0,        # 0.0-2.0 per-layer gain for scale 7
+        "fractal_only_wet": 0,      # 0=include original, 1=fractal layers only
+        "layer_spread": 0.0,        # 0.0-1.0 stereo spread across layers
+        "layer_detune": 0.0,        # 0.0-1.0 pitch detune between layers
+        "layer_delay": 0.0,         # 0.0-1.0 progressive delay per layer
+        "layer_tilt": 0.0,          # -1.0 to 1.0 spectral tilt across layers
+        "feedback": 0.0,            # 0.0-0.95 output-to-input feedback
+
         # --- Bounce (parameter modulation) ---
         "bounce": 0,                # 0=off, 1=on
         "bounce_target": 0,         # index into BOUNCE_TARGETS
@@ -116,13 +131,29 @@ PARAM_RANGES = {
     "wet_dry":          (0.0, 1.0),
     "output_gain":      (0.0, 1.0),
     "threshold":        (0.0, 1.0),
+    "layer_gain_1":     (0.0, 2.0),
+    "layer_gain_2":     (0.0, 2.0),
+    "layer_gain_3":     (0.0, 2.0),
+    "layer_gain_4":     (0.0, 2.0),
+    "layer_gain_5":     (0.0, 2.0),
+    "layer_gain_6":     (0.0, 2.0),
+    "layer_gain_7":     (0.0, 2.0),
+    "layer_spread":     (0.0, 1.0),
+    "layer_detune":     (0.0, 1.0),
+    "layer_delay":      (0.0, 1.0),
+    "layer_tilt":       (-1.0, 1.0),
+    "feedback":         (0.0, 0.95),
 }
 
 # Section groupings for lock feature
 PARAM_SECTIONS = {
     "fractal": ["num_scales", "scale_ratio", "amplitude_decay", "interp",
                 "reverse_scales", "scale_offset"],
-    "iteration": ["iterations", "iter_decay", "saturation"],
+    "layers": ["layer_gain_1", "layer_gain_2", "layer_gain_3", "layer_gain_4",
+               "layer_gain_5", "layer_gain_6", "layer_gain_7",
+               "fractal_only_wet", "layer_spread", "layer_detune",
+               "layer_delay", "layer_tilt"],
+    "iteration": ["iterations", "iter_decay", "saturation", "feedback"],
     "spectral": ["spectral", "window_size"],
     "filter": ["filter_type", "filter_freq", "filter_q",
                "post_filter_type", "post_filter_freq"],
@@ -140,4 +171,5 @@ CHOICE_RANGES = {
     "post_filter_type": len(POST_FILTER_NAMES),
     "bounce": 2,
     "bounce_target": len(BOUNCE_TARGETS),
+    "fractal_only_wet": 2,
 }

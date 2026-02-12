@@ -175,6 +175,39 @@ pub fn noise_gate(audio: &[f64], params: &FractalParams) -> Vec<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// One-pole filters for layer tilt
+// ---------------------------------------------------------------------------
+
+/// In-place one-pole lowpass filter.
+pub fn apply_one_pole_lp(audio: &mut [f64], cutoff_hz: f64) {
+    let cutoff = cutoff_hz.clamp(20.0, SR / 2.0 - 1.0);
+    let rc = 1.0 / (2.0 * std::f64::consts::PI * cutoff);
+    let dt = 1.0 / SR;
+    let alpha = dt / (rc + dt);
+    let mut prev = audio[0];
+    for s in audio.iter_mut() {
+        prev += alpha * (*s - prev);
+        *s = prev;
+    }
+}
+
+/// In-place one-pole highpass filter.
+pub fn apply_one_pole_hp(audio: &mut [f64], cutoff_hz: f64) {
+    let cutoff = cutoff_hz.clamp(20.0, SR / 2.0 - 1.0);
+    let rc = 1.0 / (2.0 * std::f64::consts::PI * cutoff);
+    let dt = 1.0 / SR;
+    let alpha = rc / (rc + dt);
+    let mut prev_in = audio[0];
+    let mut prev_out = audio[0];
+    for s in audio.iter_mut() {
+        let inp = *s;
+        prev_out = alpha * (prev_out + inp - prev_in);
+        prev_in = inp;
+        *s = prev_out;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Limiter
 // ---------------------------------------------------------------------------
 

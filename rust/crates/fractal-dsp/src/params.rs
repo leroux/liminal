@@ -55,6 +55,18 @@ pub fn param_range(key: &str) -> Option<(f64, f64)> {
         "wet_dry" => Some((0.0, 1.0)),
         "output_gain" => Some((0.0, 1.0)),
         "threshold" => Some((0.0, 1.0)),
+        "layer_gain_1" => Some((0.0, 2.0)),
+        "layer_gain_2" => Some((0.0, 2.0)),
+        "layer_gain_3" => Some((0.0, 2.0)),
+        "layer_gain_4" => Some((0.0, 2.0)),
+        "layer_gain_5" => Some((0.0, 2.0)),
+        "layer_gain_6" => Some((0.0, 2.0)),
+        "layer_gain_7" => Some((0.0, 2.0)),
+        "layer_spread" => Some((0.0, 1.0)),
+        "layer_detune" => Some((0.0, 1.0)),
+        "layer_delay" => Some((0.0, 1.0)),
+        "layer_tilt" => Some((-1.0, 1.0)),
+        "feedback" => Some((0.0, 0.95)),
         _ => None,
     }
 }
@@ -103,6 +115,24 @@ pub struct FractalParams {
     pub gate: f64,
     pub crush: f64,
     pub decimate: f64,
+
+    // --- Layers ---
+    pub layer_gain_1: f64,
+    pub layer_gain_2: f64,
+    pub layer_gain_3: f64,
+    pub layer_gain_4: f64,
+    pub layer_gain_5: f64,
+    pub layer_gain_6: f64,
+    pub layer_gain_7: f64,
+    #[serde(deserialize_with = "as_i32")]
+    pub fractal_only_wet: i32,
+    pub layer_spread: f64,
+    pub layer_detune: f64,
+    pub layer_delay: f64,
+    pub layer_tilt: f64,
+
+    // --- Feedback ---
+    pub feedback: f64,
 
     // --- Bounce ---
     #[serde(deserialize_with = "as_i32")]
@@ -155,6 +185,21 @@ impl Default for FractalParams {
             gate: 0.0,
             crush: 0.0,
             decimate: 0.0,
+            // Layers
+            layer_gain_1: 1.0,
+            layer_gain_2: 1.0,
+            layer_gain_3: 1.0,
+            layer_gain_4: 1.0,
+            layer_gain_5: 1.0,
+            layer_gain_6: 1.0,
+            layer_gain_7: 1.0,
+            fractal_only_wet: 0,
+            layer_spread: 0.0,
+            layer_detune: 0.0,
+            layer_delay: 0.0,
+            layer_tilt: 0.0,
+            // Feedback
+            feedback: 0.0,
             // Bounce
             bounce: 0,
             bounce_target: 0,
@@ -190,6 +235,20 @@ impl FractalParams {
             "crush" => self.crush,
             "spectral" => self.spectral,
             _ => 0.5,
+        }
+    }
+
+    /// Get per-layer gain for scale index s (1..7).
+    pub fn layer_gain(&self, s: i32) -> f64 {
+        match s {
+            1 => self.layer_gain_1,
+            2 => self.layer_gain_2,
+            3 => self.layer_gain_3,
+            4 => self.layer_gain_4,
+            5 => self.layer_gain_5,
+            6 => self.layer_gain_6,
+            7 => self.layer_gain_7,
+            _ => 1.0,
         }
     }
 
