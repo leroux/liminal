@@ -951,9 +951,11 @@ dependencies = [
 name = "fractal-plugin"
 version = "0.1.0"
 dependencies = [
+ "cocoa",
  "fractal-dsp",
  "nih_plug",
  "nih_plug_egui",
+ "objc",
  "serde_json",
  "shared-dsp",
 ]
@@ -1319,9 +1321,11 @@ dependencies = [
 name = "lossy-plugin"
 version = "0.1.0"
 dependencies = [
+ "cocoa",
  "lossy-dsp",
  "nih_plug",
  "nih_plug_egui",
+ "objc",
  "serde_json",
  "shared-dsp",
 ]

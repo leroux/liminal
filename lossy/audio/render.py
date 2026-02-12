@@ -10,8 +10,8 @@ import os
 import numpy as np
 from scipy.io import wavfile
 
-from engine.params import SR, default_params, migrate_legacy_params
-from engine.lossy import render_lossy
+from lossy.engine.params import SR, default_params, migrate_legacy_params
+from lossy.engine.lossy import render_lossy
 
 
 def load_wav(path):

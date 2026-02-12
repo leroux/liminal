@@ -6,6 +6,7 @@
 //! original length, and sum with decaying gains to create self-similar
 //! texture at multiple timescales.
 
+use crate::filters::{apply_one_pole_hp, apply_one_pole_lp};
 use crate::params::FractalParams;
 use num_complex::Complex64;
 use realfft::RealFftPlanner;
@@ -133,6 +134,113 @@ pub fn fractalize_time(samples: &[f64], params: &FractalParams) -> Vec<f64> {
 
     // Normalize to input peak to prevent clipping
     normalize_to_input_peak(samples, out)
+}
+
+// ---------------------------------------------------------------------------
+// Per-layer fractalization (features 1, 2, 4, 5, 7)
+// ---------------------------------------------------------------------------
+
+/// Produce per-layer buffers instead of accumulating into one.
+/// Returns Vec<Vec<f64>> where index 0 is the original (or silence if only_wet).
+pub fn fractalize_time_layers(samples: &[f64], params: &FractalParams) -> Vec<Vec<f64>> {
+    let n = samples.len();
+    let num_scales = params.num_scales.clamp(2, 8);
+    let scale_ratio = params.scale_ratio.clamp(0.1, 0.9);
+    let amplitude_decay = params.amplitude_decay.clamp(0.1, 1.0);
+    let reverse_scales = params.reverse_scales != 0;
+    let scale_offset = params.scale_offset.clamp(0.0, 1.0);
+    let layer_detune = params.layer_detune.clamp(0.0, 1.0);
+    let linear = params.interp == 1;
+
+    let mut layers = Vec::with_capacity(num_scales as usize);
+
+    // Layer 0: original signal or silence (feature 2: fractal_only_wet)
+    if params.fractal_only_wet == 0 {
+        layers.push(samples.to_vec());
+    } else {
+        layers.push(vec![0.0; n]);
+    }
+
+    for s in 1..num_scales {
+        // Base compressed length with optional detune (feature 4)
+        let mut cl = n as f64 * scale_ratio.powi(s);
+        if layer_detune > 0.0 {
+            let sign = if s % 2 == 0 { 1.0 } else { -1.0 };
+            cl *= 1.0 + layer_detune * 0.1 * sign;
+        }
+        let compressed_len = if linear { cl.max(2.0) } else { cl.max(1.0) } as usize;
+
+        let gain = amplitude_decay.powi(s) * params.layer_gain(s);
+
+        // Build compressed version
+        let mut compressed = vec![0.0_f64; compressed_len];
+        if linear {
+            for i in 0..compressed_len {
+                let pos = if compressed_len <= 1 {
+                    0.0
+                } else {
+                    i as f64 * (n - 1) as f64 / (compressed_len - 1) as f64
+                };
+                let idx0 = pos as usize;
+                let idx1 = (idx0 + 1).min(n - 1);
+                let frac = pos - idx0 as f64;
+                compressed[i] = samples[idx0] * (1.0 - frac) + samples[idx1] * frac;
+            }
+        } else {
+            for i in 0..compressed_len {
+                let idx = if compressed_len <= 1 {
+                    0
+                } else {
+                    ((i * (n - 1)) / (compressed_len - 1)).min(n - 1)
+                };
+                compressed[i] = samples[idx];
+            }
+        }
+
+        if reverse_scales {
+            compressed.reverse();
+        }
+
+        // Tile with offset and apply gain
+        let offset_samples = (scale_offset * compressed_len as f64) as usize;
+        let mut layer = vec![0.0_f64; n];
+        for i in 0..n {
+            let src = (i + offset_samples) % compressed_len;
+            layer[i] = gain * compressed[src];
+        }
+
+        layers.push(layer);
+    }
+
+    layers
+}
+
+/// Shift a layer forward in time (feature 5: layer_delay).
+fn apply_layer_delay(layer: &mut [f64], delay_samples: usize) {
+    if delay_samples == 0 || delay_samples >= layer.len() {
+        return;
+    }
+    layer.rotate_right(delay_samples);
+    for s in layer[..delay_samples].iter_mut() {
+        *s = 0.0;
+    }
+}
+
+/// Apply per-layer tilt filtering (feature 7).
+fn apply_layer_tilt(layer: &mut [f64], tilt: f64, s: i32, num_scales: i32) {
+    if tilt.abs() < 0.001 || s == 0 {
+        return;
+    }
+    let ratio = s as f64 / (num_scales - 1).max(1) as f64;
+    if tilt > 0.0 {
+        // Positive tilt: darken higher layers
+        let cutoff = 20000.0 * (1.0 - tilt * ratio);
+        apply_one_pole_lp(layer, cutoff.max(200.0));
+    } else {
+        // Negative tilt: thin out higher layers
+        let cutoff = 20.0 + 5000.0 * tilt.abs() * ratio;
+        apply_one_pole_hp(layer, cutoff);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,18 +389,53 @@ pub fn apply_saturation(audio: &mut [f64], amount: f64) {
 }
 
 /// Apply fractalization with iteration and spectral blend.
+/// Uses per-layer processing to support gain, detune, delay, tilt, and only-wet.
 pub fn render_fractal_core(samples: &[f64], params: &FractalParams) -> Vec<f64> {
     let spectral_blend = params.spectral.clamp(0.0, 1.0);
     let iterations = params.iterations.clamp(1, 4);
     let iter_decay = params.iter_decay.clamp(0.3, 1.0);
     let saturation = params.saturation.clamp(0.0, 1.0);
+    let layer_delay = params.layer_delay.clamp(0.0, 1.0);
+    let layer_tilt = params.layer_tilt;
+    let num_scales = params.num_scales.clamp(2, 8);
 
     let mut current = samples.to_vec();
 
     for it in 0..iterations {
-        // Time-domain fractalization
+        // Time-domain fractalization via per-layer approach
         let time_out = if spectral_blend < 1.0 {
-            fractalize_time(&current, params)
+            let mut layers = fractalize_time_layers(&current, params);
+            let n = current.len();
+
+            // Apply per-layer delay (feature 5)
+            if layer_delay > 0.0 {
+                let max_delay = (n as f64 * 0.1) as usize; // up to 10% of buffer
+                for (s, layer) in layers.iter_mut().enumerate() {
+                    if s == 0 {
+                        continue;
+                    }
+                    let delay_samples = (layer_delay * max_delay as f64 * s as f64
+                        / (num_scales - 1).max(1) as f64) as usize;
+                    apply_layer_delay(layer, delay_samples);
+                }
+            }
+
+            // Apply per-layer tilt (feature 7)
+            if layer_tilt.abs() > 0.001 {
+                for (s, layer) in layers.iter_mut().enumerate() {
+                    apply_layer_tilt(layer, layer_tilt, s as i32, num_scales);
+                }
+            }
+
+            // Sum all layers
+            let mut sum = vec![0.0_f64; n];
+            for layer in &layers {
+                for (i, &v) in layer.iter().enumerate() {
+                    sum[i] += v;
+                }
+            }
+
+            normalize_to_input_peak(&current, sum)
         } else {
             current.clone()
         };
@@ -333,6 +476,139 @@ pub fn render_fractal_core(samples: &[f64], params: &FractalParams) -> Vec<f64> 
     }
 
     current
+}
+
+/// Stereo core with per-layer constant-power pan (feature 3: layer_spread).
+pub fn render_fractal_core_stereo(
+    left: &[f64],
+    right: &[f64],
+    params: &FractalParams,
+) -> (Vec<f64>, Vec<f64>) {
+    let layer_spread = params.layer_spread.clamp(0.0, 1.0);
+
+    if layer_spread <= 0.0 {
+        // No spread: process channels independently
+        let out_l = render_fractal_core(left, params);
+        let out_r = render_fractal_core(right, params);
+        return (out_l, out_r);
+    }
+
+    let spectral_blend = params.spectral.clamp(0.0, 1.0);
+    let iterations = params.iterations.clamp(1, 4);
+    let iter_decay = params.iter_decay.clamp(0.3, 1.0);
+    let saturation = params.saturation.clamp(0.0, 1.0);
+    let layer_delay_param = params.layer_delay.clamp(0.0, 1.0);
+    let layer_tilt = params.layer_tilt;
+    let num_scales = params.num_scales.clamp(2, 8);
+    let n = left.len();
+
+    let mut cur_l = left.to_vec();
+    let mut cur_r = right.to_vec();
+
+    for it in 0..iterations {
+        let (time_l, time_r) = if spectral_blend < 1.0 {
+            let mut layers_l = fractalize_time_layers(&cur_l, params);
+            let mut layers_r = fractalize_time_layers(&cur_r, params);
+
+            // Per-layer delay
+            if layer_delay_param > 0.0 {
+                let max_delay = (n as f64 * 0.1) as usize;
+                for s in 1..layers_l.len() {
+                    let ds = (layer_delay_param * max_delay as f64 * s as f64
+                        / (num_scales - 1).max(1) as f64) as usize;
+                    apply_layer_delay(&mut layers_l[s], ds);
+                    apply_layer_delay(&mut layers_r[s], ds);
+                }
+            }
+
+            // Per-layer tilt
+            if layer_tilt.abs() > 0.001 {
+                for s in 0..layers_l.len() {
+                    apply_layer_tilt(&mut layers_l[s], layer_tilt, s as i32, num_scales);
+                    apply_layer_tilt(&mut layers_r[s], layer_tilt, s as i32, num_scales);
+                }
+            }
+
+            // Combine with per-layer constant-power pan
+            let mut out_l = vec![0.0_f64; n];
+            let mut out_r = vec![0.0_f64; n];
+
+            for (s, (ll, lr)) in layers_l.iter().zip(layers_r.iter()).enumerate() {
+                if s == 0 {
+                    // Layer 0 stays center
+                    for i in 0..n {
+                        out_l[i] += ll[i];
+                        out_r[i] += lr[i];
+                    }
+                } else {
+                    // Alternate layers left/right
+                    let sign = if s % 2 == 0 { 1.0 } else { -1.0 };
+                    let pan = layer_spread * sign * s as f64
+                        / (num_scales - 1).max(1) as f64;
+                    let theta = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
+                    let gain_l = theta.cos();
+                    let gain_r = theta.sin();
+                    for i in 0..n {
+                        out_l[i] += ll[i] * gain_l + lr[i] * gain_l;
+                        out_r[i] += ll[i] * gain_r + lr[i] * gain_r;
+                    }
+                }
+            }
+
+            let norm_l = normalize_to_input_peak(&cur_l, out_l);
+            let norm_r = normalize_to_input_peak(&cur_r, out_r);
+            (norm_l, norm_r)
+        } else {
+            (cur_l.clone(), cur_r.clone())
+        };
+
+        // Spectral blend per channel
+        let (spec_l, spec_r) = if spectral_blend > 0.0 {
+            (
+                fractalize_spectral(&cur_l, params),
+                fractalize_spectral(&cur_r, params),
+            )
+        } else {
+            (cur_l.clone(), cur_r.clone())
+        };
+
+        let (mut res_l, mut res_r) = if spectral_blend <= 0.0 {
+            (time_l, time_r)
+        } else if spectral_blend >= 1.0 {
+            (spec_l, spec_r)
+        } else {
+            let bl: Vec<f64> = time_l
+                .iter()
+                .zip(spec_l.iter())
+                .map(|(&t, &s)| (1.0 - spectral_blend) * t + spectral_blend * s)
+                .collect();
+            let br: Vec<f64> = time_r
+                .iter()
+                .zip(spec_r.iter())
+                .map(|(&t, &s)| (1.0 - spectral_blend) * t + spectral_blend * s)
+                .collect();
+            (bl, br)
+        };
+
+        if saturation > 0.0 {
+            apply_saturation(&mut res_l, saturation);
+            apply_saturation(&mut res_r, saturation);
+        }
+
+        if it < iterations - 1 {
+            for s in res_l.iter_mut() {
+                *s *= iter_decay;
+            }
+            for s in res_r.iter_mut() {
+                *s *= iter_decay;
+            }
+        }
+
+        cur_l = res_l;
+        cur_r = res_r;
+    }
+
+    (cur_l, cur_r)
 }
 
 // ---------------------------------------------------------------------------

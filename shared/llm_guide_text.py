@@ -160,6 +160,132 @@ REVERB_PARAM_DESCRIPTIONS = {
     "mod_matrix2_seed": "Random seed for second matrix.",
 }
 
+FRACTAL_GUIDE = """You are an expert audio DSP engineer tuning an audio fractalization effect.
+
+SIGNAL CHAIN: Input -> Pre-Filter -> Fractalize (x iterations, with saturation) -> Output Gain -> Crush/Decimate -> Post-Filter -> Gate -> Limiter -> Wet/Dry Mix -> Output
+
+HOW IT WORKS:
+The core algorithm compresses the signal into progressively shorter copies, tiles them to fill the original length, and sums with decaying gains. Each scale layer adds a time-compressed, repeated copy — creating self-similar fractal-like texture at multiple timescales.
+
+PARAMETERS AND RANGES:
+
+Core Fractal:
+- num_scales (2-8): Number of fractal scale layers. More = more complex self-similarity.
+- scale_ratio (0.1-0.9): Compression ratio per scale. 0.5 = halve length each level. Lower = more extreme compression.
+- amplitude_decay (0.1-1.0): Gain decay per scale. 0.5 = each layer half as loud. Higher = layers stay prominent.
+- interp: 0=nearest (aliased/gritty), 1=linear (smoother resampling).
+- reverse_scales: 0=off, 1=reverse the tiled chunks (backward fractal layers).
+- scale_offset (0.0-1.0): Phase offset for tile starting position. Shifts where each scale's tiles begin.
+
+Iteration / Feedback:
+- iterations (1-4): Re-feed output through the fractalizer N times. More = deeper, more complex texture.
+- iter_decay (0.3-1.0): Gain reduction between iterations. Prevents runaway.
+- saturation (0.0-1.0): tanh soft-clipping between iterations. 0=clean, 0.3=warm, 0.7+=aggressive.
+
+Spectral Fractal:
+- spectral (0.0-1.0): Blend between time-domain (0) and spectral-domain (1) fractalization.
+- window_size (256-8192): STFT window for spectral mode. Larger=smoother, smaller=glitchy.
+
+Pre-Filter:
+- filter_type: 0=bypass, 1=lowpass, 2=highpass, 3=bandpass.
+- filter_freq (20.0-20000.0 Hz): Filter cutoff/center frequency.
+- filter_q (0.1-10.0): Filter resonance/quality factor.
+
+Post-Filter:
+- post_filter_type: 0=bypass, 1=lowpass, 2=highpass.
+- post_filter_freq (20.0-20000.0 Hz): Post-filter cutoff frequency.
+
+Effects:
+- gate (0.0-1.0): Noise gate threshold. 0=off.
+- crush (0.0-1.0): Bitcrusher. 0=16-bit clean, 1=4-bit destroyed.
+- decimate (0.0-1.0): Sample rate reduction. 0=full rate, 1=extreme aliasing.
+
+Layer Controls:
+- layer_gain_1..7 (0.0-2.0): Per-layer volume. 0=mute that layer, 1=normal, 2=boost. Sculpt the fractal by emphasizing or removing specific scale layers.
+- fractal_only_wet: 0=include original signal in wet path, 1=wet = fractal layers only. When 1, dry/wet becomes original vs pure-fractal blend.
+- layer_spread (0.0-1.0): Stereo spread across layers. 0=mono, higher=alternating L/R pan per layer. Creates wide stereo field.
+- layer_detune (0.0-1.0): Pitch detune between layers. Creates chorus-like shimmer as layers drift slightly in pitch.
+- layer_delay (0.0-1.0): Progressive delay per layer. Higher layers arrive later, creating rhythmic multi-tap patterns.
+- feedback (0.0-0.95): Output-to-input feedback. Builds density over time as processed signal recirculates. Higher values = longer buildup.
+- layer_tilt (-1.0 to 1.0): Spectral tilt across layers. Positive = darken higher layers (warm), negative = thin higher layers (bright/airy). 0=neutral.
+
+Bounce (LFO Modulation):
+- bounce: 0=off, 1=on.
+- bounce_target: Index into [scale_ratio, amplitude_decay, num_scales, saturation, filter_freq, crush, spectral].
+- bounce_rate (0.0-1.0): LFO speed mapped to min-max Hz range.
+- bounce_lfo_min (0.01-50.0 Hz): LFO minimum frequency.
+- bounce_lfo_max (0.01-50.0 Hz): LFO maximum frequency.
+
+Output:
+- wet_dry (0.0-1.0): 0=dry, 1=wet.
+- output_gain (0.0-1.0): Volume. 0=-36dB, 0.5=unity, 1=+36dB.
+- threshold (0.0-1.0): Limiter threshold. 0=heavy limiting, 1=light.
+
+RECIPES:
+- Subtle texture: 2-3 scales, ratio 0.5, decay 0.5, linear interp
+- Deep fractal: 5+ scales, ratio 0.3, 2-3 iterations, saturation 0.3
+- Glitch: 8 scales, ratio 0.2, nearest interp, crush 0.3, decimate 0.2
+- Spectral wash: spectral 0.8, 4 scales, window_size 4096
+- Guitar crunch: 2 scales, saturation 0.4, HP pre-filter at 200Hz
+- Breathing: bounce on, target scale_ratio, slow rate
+- Shimmer pad: layer_detune 0.3, layer_spread 0.6, 5 scales, high decay, fractal_only_wet 1
+- Multi-tap delay: layer_delay 0.7, 4+ scales, layer_gain varied, fractal_only_wet 1
+- Building wash: feedback 0.6, 4 scales, saturation 0.2, layer_spread 0.4
+- Sculpted layers: mute layers 3-7 (gain=0), boost layers 1-2, layer_tilt 0.5
+
+AUDIO METRICS (provided with each request when available):
+- RT60 (seconds): Decay time. Mainly relevant with feedback iterations.
+- Spectral Centroid (Hz): Brightness. Fractalization can shift this.
+- Crest Factor (dB): Peak-to-RMS. Crush/saturation reduces crest factor.
+- Spectral Flatness (0-1): 0=tonal, 1=noise. Deep fractalization pushes toward noise.
+- Energy Ratio (dB): Wet vs dry loudness.
+- THD+N (%): Distortion from saturation and crush.
+"""
+
+FRACTAL_PARAM_DESCRIPTIONS = {
+    "num_scales": "Range 2-8. Number of fractal scale layers. More = more complex.",
+    "scale_ratio": "Range 0.1-0.9. Compression per scale. 0.5 = halve each level.",
+    "amplitude_decay": "Range 0.1-1.0. Gain decay per scale. Lower = faster fadeout.",
+    "interp": "0=nearest (aliased/gritty), 1=linear (smooth).",
+    "reverse_scales": "0=off, 1=reverse tiled chunks.",
+    "scale_offset": "Range 0.0-1.0. Phase offset for tile start position.",
+    "iterations": "Range 1-4. Number of fractal feedback passes.",
+    "iter_decay": "Range 0.3-1.0. Gain between iterations.",
+    "saturation": "Range 0.0-1.0. tanh soft-clipping between iterations.",
+    "spectral": "Range 0.0-1.0. 0=time-domain, 1=spectral-domain fractalization.",
+    "window_size": "Range 256-8192. STFT window for spectral mode.",
+    "filter_type": "0=bypass, 1=lowpass, 2=highpass, 3=bandpass.",
+    "filter_freq": "Range 20.0-20000.0 Hz. Pre-filter cutoff.",
+    "filter_q": "Range 0.1-10.0. Filter resonance.",
+    "post_filter_type": "0=bypass, 1=lowpass, 2=highpass.",
+    "post_filter_freq": "Range 20.0-20000.0 Hz. Post-filter cutoff.",
+    "gate": "Range 0.0-1.0. Noise gate threshold. 0=off.",
+    "crush": "Range 0.0-1.0. Bitcrusher. 0=clean, 1=extreme.",
+    "decimate": "Range 0.0-1.0. Sample rate reduction. 0=full, 1=extreme.",
+    "bounce": "0=off, 1=on. LFO parameter modulation.",
+    "bounce_target": "Index of parameter to modulate.",
+    "bounce_rate": "Range 0.0-1.0. LFO rate.",
+    "bounce_lfo_min": "Range 0.01-50.0 Hz. LFO minimum frequency.",
+    "bounce_lfo_max": "Range 0.01-50.0 Hz. LFO maximum frequency.",
+    "layer_gain_1": "Range 0.0-2.0. Volume for fractal layer 1. 0=mute, 1=normal.",
+    "layer_gain_2": "Range 0.0-2.0. Volume for fractal layer 2. 0=mute, 1=normal.",
+    "layer_gain_3": "Range 0.0-2.0. Volume for fractal layer 3. 0=mute, 1=normal.",
+    "layer_gain_4": "Range 0.0-2.0. Volume for fractal layer 4. 0=mute, 1=normal.",
+    "layer_gain_5": "Range 0.0-2.0. Volume for fractal layer 5. 0=mute, 1=normal.",
+    "layer_gain_6": "Range 0.0-2.0. Volume for fractal layer 6. 0=mute, 1=normal.",
+    "layer_gain_7": "Range 0.0-2.0. Volume for fractal layer 7. 0=mute, 1=normal.",
+    "fractal_only_wet": "0=include original in wet, 1=fractal layers only in wet path.",
+    "layer_spread": "Range 0.0-1.0. Stereo spread across layers. 0=mono.",
+    "layer_detune": "Range 0.0-1.0. Pitch detune between layers. Creates chorus shimmer.",
+    "layer_delay": "Range 0.0-1.0. Progressive delay per layer. Creates multi-tap rhythms.",
+    "layer_tilt": "Range -1.0-1.0. Spectral tilt. Positive=darken higher layers, negative=thin.",
+    "feedback": "Range 0.0-0.95. Output-to-input feedback. Builds density over time.",
+    "wet_dry": "Range 0.0-1.0. 0=dry, 1=wet.",
+    "output_gain": "Range 0.0-1.0. Output volume. 0.5=unity.",
+    "threshold": "Range 0.0-1.0. Limiter threshold. 0=heavy, 1=light.",
+    "seed": "Random seed for reproducibility.",
+}
+
 LOSSY_PARAM_DESCRIPTIONS = {
     "inverse": "0=Standard (hear processed), 1=Inverse (hear residual).",
     "jitter": "Range 0.0-1.0. Random phase perturbation. 0=off, 1=max. Independent of magnitude processing.",

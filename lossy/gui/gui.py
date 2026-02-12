@@ -58,6 +58,12 @@ class LossyGUI:
         self.root = root
         self.root.title("Lossy — codec artifact emulator")
         self.root.geometry("900x680")
+        # Window / dock icon
+        _icon_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                                   "icons", "lossy.png")
+        if os.path.exists(_icon_path):
+            self._app_icon = tk.PhotoImage(file=_icon_path)
+            self.root.iconphoto(True, self._app_icon)
         self.params = default_params()
         self.source_audio = None
         self.rendered_audio = None
@@ -80,6 +86,8 @@ class LossyGUI:
         self._gen_history = []     # list of dicts: {params, audio, metrics, warning, spectrogram}
         self._gen_index = -1       # current position in history
         self._gen_max = 50         # max history entries
+        self._output_device_idx = None  # None = system default
+        self._output_devices = []       # [(sd_index, name), ...]
         self._load_wav(DEFAULT_SOURCE)
         self._build_ui()
 
@@ -169,6 +177,12 @@ class LossyGUI:
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(top, textvariable=self.status_var).pack(side="right")
+        ttk.Button(top, text="\u21bb", width=2, command=self._refresh_devices).pack(side="right", padx=1)
+        self._device_combo = ttk.Combobox(top, state="readonly", width=28)
+        self._device_combo.pack(side="right", padx=2)
+        self._device_combo.bind("<<ComboboxSelected>>", self._on_device_changed)
+        ttk.Label(top, text="Output:").pack(side="right", padx=(5, 2))
+        self._refresh_devices()
 
         # Notebook
         nb = ttk.Notebook(self.root)
@@ -1485,7 +1499,7 @@ class LossyGUI:
         sample = int(frac * len(audio))
         sd.stop()
         sd.default.reset()
-        sd.play(audio[sample:], SR)
+        sd.play(audio[sample:], SR, device=self._output_device_idx)
         self._start_cursor(audio, canvases)
         self._playback_start = time.time() - frac * self._playback_length
 
@@ -1503,7 +1517,7 @@ class LossyGUI:
             sd.stop()
             self._stop_cursor()
             sd.default.reset()
-            sd.play(self.rendered_audio, SR)
+            sd.play(self.rendered_audio, SR, device=self._output_device_idx)
             self._start_cursor(self.rendered_audio, self._output_canvases())
             dur = len(self.rendered_audio) / SR
             self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
@@ -1649,16 +1663,48 @@ class LossyGUI:
     def _play_rendered(self):
         if self.rendered_audio is not None:
             sd.default.reset()
-            sd.play(self.rendered_audio, SR)
+            sd.play(self.rendered_audio, SR, device=self._output_device_idx)
             self._start_cursor(self.rendered_audio, self._output_canvases())
             self.status_var.set("Playing...")
 
     def _on_play_dry(self):
         if self.source_audio is not None:
             sd.default.reset()
-            sd.play(self.source_audio, SR)
+            sd.play(self.source_audio, SR, device=self._output_device_idx)
             self._start_cursor(self.source_audio, self._input_canvases())
             self.status_var.set("Playing dry...")
+
+    # ------------------------------------------------------------------
+    # Output device selection
+    # ------------------------------------------------------------------
+
+    def _get_output_devices(self):
+        devices = sd.query_devices()
+        out = []
+        for i, d in enumerate(devices):
+            if d['max_output_channels'] > 0:
+                out.append((i, d['name']))
+        return out
+
+    def _refresh_devices(self):
+        devs = self._get_output_devices()
+        self._output_devices = devs
+        names = ["System Default"] + [name for _, name in devs]
+        self._device_combo['values'] = names
+        if self._output_device_idx is not None:
+            for i, (idx, _) in enumerate(devs):
+                if idx == self._output_device_idx:
+                    self._device_combo.current(i + 1)
+                    return
+        self._output_device_idx = None
+        self._device_combo.current(0)
+
+    def _on_device_changed(self, event=None):
+        sel = self._device_combo.current()
+        if sel <= 0:
+            self._output_device_idx = None
+        else:
+            self._output_device_idx = self._output_devices[sel - 1][0]
 
     def _on_stop(self):
         if self._autoplay_id is not None:

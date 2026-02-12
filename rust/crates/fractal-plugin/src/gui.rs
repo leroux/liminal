@@ -245,6 +245,36 @@ pub fn create(params: Arc<FractalPluginParams>) -> Option<Box<dyn Editor>> {
                         ));
                     });
 
+                    // LAYERS section
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new("LAYERS").color(AMBER_ACCENT).strong(),
+                    )
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_1, setter));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_2, setter));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_3, setter));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_4, setter));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_5, setter));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_6, setter));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_gain_7, setter));
+                        ui.separator();
+                        ui.add(widgets::ParamSlider::for_param(
+                            &params.fractal_only_wet,
+                            setter,
+                        ));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_spread, setter));
+                        ui.add(widgets::ParamSlider::for_param(
+                            &params.layer_detune,
+                            setter,
+                        ));
+                        ui.add(widgets::ParamSlider::for_param(
+                            &params.layer_delay,
+                            setter,
+                        ));
+                        ui.add(widgets::ParamSlider::for_param(&params.layer_tilt, setter));
+                    });
+
                     // Two-column grid for smaller sections
                     ui.columns(2, |columns| {
                         // --- Left column ---
@@ -265,6 +295,10 @@ pub fn create(params: Arc<FractalPluginParams>) -> Option<Box<dyn Editor>> {
                             ));
                             ui.add(widgets::ParamSlider::for_param(
                                 &params.saturation,
+                                setter,
+                            ));
+                            ui.add(widgets::ParamSlider::for_param(
+                                &params.feedback,
                                 setter,
                             ));
                         });
