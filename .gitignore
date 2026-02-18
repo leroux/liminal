@@ -28,3 +28,5 @@ explore/inputs/
 explore/asymmetry_winners/
 explore/lofidrum_winners/
 explore/sparse_hits_winners/
+
+node_modules/

@@ -1,0 +1,14 @@
+{
+  "name": "chordspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/app.ts --bundle --outfile=dist/app.js --format=esm --sourcemap",
+    "watch": "esbuild src/app.ts --bundle --outfile=dist/app.js --format=esm --sourcemap --watch",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}
