@@ -28,18 +28,21 @@ class LLMTuner:
     are non-blocking — results stream back via callbacks on the tkinter main thread.
     """
 
-    def __init__(self, guide_text, param_descriptions, param_ranges, default_params_fn, root):
+    def __init__(self, guide_text, param_descriptions, param_ranges, default_params_fn, root,
+                 schema=None):
         """
         guide_text:          REVERB_GUIDE or LOSSY_GUIDE system prompt string
         param_descriptions:  dict of param_name -> description string for JSON schema
         param_ranges:        PARAM_RANGES dict from engine/params.py
         default_params_fn:   callable returning default_params() dict
         root:                tkinter root (for root.after scheduling)
+        schema:              optional ParamSchema for validation
         """
         self._guide_text = guide_text
         self._param_descriptions = param_descriptions
         self._param_ranges = param_ranges
         self._default_params_fn = default_params_fn
+        self._schema = schema
         self._root = root
         self._undo_params = None
         self._client = None
@@ -312,6 +315,9 @@ AUTONOMOUS TUNING:
 
     def _validate_and_clamp(self, raw):
         """Validate keys, clamp values to PARAM_RANGES, fix array lengths."""
+        if self._schema is not None:
+            return self._schema.validate_and_clamp(raw)
+
         defaults = self._default_params_fn()
         valid_keys = set(defaults.keys())
         result = {}

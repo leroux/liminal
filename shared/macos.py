@@ -3,6 +3,37 @@
 import sys
 
 
+def get_display_scale() -> float:
+    """Return the display backing scale factor (2.0 for Retina, 1.0 otherwise).
+
+    Uses NSScreen.mainScreen.backingScaleFactor via ctypes so no PyObjC is needed.
+    Returns 1.0 on non-macOS or if detection fails.
+    """
+    if sys.platform != 'darwin':
+        return 1.0
+    try:
+        import ctypes
+        import ctypes.util
+        lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+        lib.objc_getClass.restype = ctypes.c_void_p
+        lib.objc_getClass.argtypes = [ctypes.c_char_p]
+        lib.sel_registerName.restype = ctypes.c_void_p
+        lib.sel_registerName.argtypes = [ctypes.c_char_p]
+
+        # NSScreen.mainScreen
+        lib.objc_msgSend.restype = ctypes.c_void_p
+        lib.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        NSScreen = lib.objc_getClass(b'NSScreen')
+        screen = lib.objc_msgSend(NSScreen, lib.sel_registerName(b'mainScreen'))
+
+        # backingScaleFactor returns CGFloat (mapped to c_double)
+        lib.objc_msgSend.restype = ctypes.c_double
+        scale = lib.objc_msgSend(screen, lib.sel_registerName(b'backingScaleFactor'))
+        return float(scale)
+    except Exception:
+        return 1.0
+
+
 def set_app_name(name: str) -> None:
     """Set the macOS dock / menu-bar app name (must be called before Tk mainloop).
 
