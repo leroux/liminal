@@ -1,51 +1,16 @@
 """Offline WAV rendering for the Lossy plugin.
 
 Usage:
-    python audio/render.py input.wav output.wav [--preset preset.json] [--loss 0.7] [--window_size 2048]
+    python -m lossy.audio.render input.wav output.wav [--preset preset.json] [--loss 0.7]
 """
 
 import argparse
 import json
-import os
 import numpy as np
-from scipy.io import wavfile
 
 from lossy.engine.params import SR, default_params, migrate_legacy_params
 from lossy.engine.lossy import render_lossy
-
-
-def load_wav(path):
-    sr, data = wavfile.read(path)
-    if data.dtype == np.int16:
-        audio = data.astype(np.float64) / 32768.0
-    elif data.dtype == np.int32:
-        audio = data.astype(np.float64) / 2147483648.0
-    else:
-        audio = data.astype(np.float64)
-    # Resample to engine SR if needed (engine assumes SR throughout)
-    if sr != SR:
-        from scipy.signal import resample_poly
-        from math import gcd
-        g = gcd(SR, sr)
-        audio = resample_poly(audio, SR // g, sr // g, axis=0)
-        sr = SR
-    # Keep stereo as (samples, 2) — don't downmix
-    return audio, sr
-
-
-def save_wav(path, audio, sr=SR):
-    peak = np.max(np.abs(audio))
-    if peak > 1.0:
-        audio = audio / peak * 0.95
-    elif 0 < peak < 0.1:
-        audio = audio / peak * 0.9
-    out = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-    wavfile.write(path, sr, out)
-
-
-def load_preset(path):
-    with open(path) as f:
-        return json.load(f)
+from shared.audio import load_wav, save_wav
 
 
 def main():
@@ -62,7 +27,8 @@ def main():
 
     params = default_params()
     if args.preset:
-        preset = load_preset(args.preset)
+        with open(args.preset) as f:
+            preset = json.load(f)
         migrate_legacy_params(preset)
         params.update(preset)
 
@@ -77,7 +43,7 @@ def main():
     if args.wet is not None:
         params["wet_dry"] = args.wet
 
-    audio, sr = load_wav(args.input)
+    audio, sr = load_wav(args.input, SR)
     n = audio.shape[0] if audio.ndim == 2 else len(audio)
     ch = "stereo" if audio.ndim == 2 else "mono"
     print(f"Loaded {args.input}: {n} samples, {sr} Hz, {ch}")

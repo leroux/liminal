@@ -1,0 +1,16 @@
+[package]
+name = "explore-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "explore"
+path = "src/main.rs"
+
+[dependencies]
+explore-dsp = { path = "../explore-dsp" }
+hound.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+clap.workspace = true

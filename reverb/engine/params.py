@@ -1,197 +1,150 @@
-"""Parameter dict schema and defaults for the FDN reverb.
+"""Parameter schema for the FDN reverb.
 
 This is the shared contract between GUI, ML, and manual scripting.
 All parameter sources produce a dict in this format.
+
+Defined declaratively using ParamDef — legacy dicts (PARAM_RANGES,
+PARAM_SECTIONS, CHOICE_RANGES) are derived automatically.
 """
+
+from shared.params import ParamType as T, ParamDef, ParamSchema
 
 SR = 44100
 
+# ── Schema ────────────────────────────────────────────────────────────
 
-def default_params() -> dict:
-    """A reasonable 'medium room' starting point."""
-    return {
-        # 8 delay times in samples — prime-ish ms values for dense echo pattern
-        "delay_times": [
-            int(29.7 / 1000 * SR),   # 1310
-            int(37.1 / 1000 * SR),   # 1637
-            int(41.3 / 1000 * SR),   # 1821
-            int(47.9 / 1000 * SR),   # 2113
-            int(53.1 / 1000 * SR),   # 2342
-            int(59.3 / 1000 * SR),   # 2615
-            int(67.7 / 1000 * SR),   # 2986
-            int(73.1 / 1000 * SR),   # 3224
-        ],
+_PARAMS = [
+    # --- Per-node arrays (8 nodes) ---
+    ParamDef("delay_times", T.INT_ARRAY, section="delay_times",
+             default=[int(ms / 1000 * SR) for ms in
+                      [29.7, 37.1, 41.3, 47.9, 53.1, 59.3, 67.7, 73.1]],
+             bypass=[int(29.7 / 1000 * SR)] * 8,
+             range=(1, int(300 / 1000 * SR)), array_size=8),
 
-        # Per-node damping (one-pole coefficient). 0=no filter, higher=darker.
-        "damping_coeffs": [0.3] * 8,
+    ParamDef("damping_coeffs", T.FLOAT_ARRAY, section="damping",
+             default=[0.3] * 8, bypass=[0.0] * 8,
+             range=(0.0, 0.99), array_size=8),
 
-        # Global feedback gain. 0=no reverb, 0.85=medium, >1.0=unstable
-        "feedback_gain": 0.85,
+    ParamDef("input_gains", T.FLOAT_ARRAY, section="input_gains",
+             default=[1.0 / 8] * 8,
+             range=(0.0, 0.5), array_size=8),
 
-        # How input distributes to each node (equal by default)
-        "input_gains": [1.0 / 8] * 8,
+    ParamDef("output_gains", T.FLOAT_ARRAY, section="output_gains",
+             default=[1.0] * 8,
+             range=(0.0, 2.0), array_size=8),
 
-        # How each node contributes to output (equal by default)
-        "output_gains": [1.0] * 8,
+    ParamDef("node_pans", T.FLOAT_ARRAY, section="node_pans",
+             default=[-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0],
+             range=(-1.0, 1.0), array_size=8),
 
-        # Pre-delay in samples (0 to ~250ms)
-        "pre_delay": int(10.0 / 1000 * SR),  # 10ms
+    # --- Global ---
+    ParamDef("feedback_gain", T.FLOAT, section="global",
+             default=0.85, bypass=0.0,
+             range=(0.0, 2.0)),
 
-        # Input diffusion — allpass gain (0=bypass, up to ~0.7)
-        "diffusion": 0.5,
+    ParamDef("wet_dry", T.FLOAT, section="global",
+             default=0.5, bypass=0.0,
+             range=(0.0, 1.0)),
 
-        # Number of input diffusion allpass stages
-        "diffusion_stages": 4,
+    ParamDef("diffusion", T.FLOAT, section="global",
+             default=0.5, bypass=0.0,
+             range=(0.0, 0.7)),
 
-        # Diffusion allpass delay times in samples (prime-ish)
-        "diffusion_delays": [
-            int(5.3 / 1000 * SR),
-            int(7.9 / 1000 * SR),
-            int(11.7 / 1000 * SR),
-            int(16.1 / 1000 * SR),
-        ],
+    ParamDef("diffusion_stages", T.CHOICE, section="global",
+             default=4, range=(1, 4),
+             choices=["1", "2", "3", "4"]),
 
-        # Wet/dry mix. 0=fully dry, 1=fully wet
-        "wet_dry": 0.5,
+    ParamDef("diffusion_delays", T.INT_ARRAY, section="global",
+             default=[int(ms / 1000 * SR) for ms in [5.3, 7.9, 11.7, 16.1]],
+             array_size=4, hidden=True, randomize_skip=True),
 
-        # Saturation (tanh soft clipping in feedback loop).
-        # 0=linear (classic FDN), 1=full tanh. Allows feedback_gain > 1.0
-        # without explosion — creates drones, distortion, metallic textures.
-        "saturation": 0.0,
+    ParamDef("saturation", T.FLOAT, section="global",
+             default=0.0,
+             range=(0.0, 1.0)),
 
-        # Feedback matrix topology
-        # Options: householder, hadamard, diagonal, random_orthogonal,
-        #          circulant, stautner_puckette
-        "matrix_type": "householder",
-        "matrix_seed": 42,  # only used for random_orthogonal
+    ParamDef("pre_delay", T.INT, section="global",
+             default=int(10.0 / 1000 * SR), bypass=0,
+             range=(0, int(250 / 1000 * SR))),
 
-        # Stereo output: per-node pan positions (-1=left, 0=center, +1=right)
-        "node_pans": [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0],
+    ParamDef("stereo_width", T.FLOAT, section="global",
+             default=1.0,
+             range=(0.0, 1.0)),
 
-        # Stereo width: 0=mono (all pans collapse to center), 1=full stereo
-        "stereo_width": 1.0,
+    # --- Matrix ---
+    ParamDef("matrix_type", T.CHOICE, section="matrix",
+             default="householder",
+             choices=["householder", "hadamard", "diagonal",
+                      "random_orthogonal", "circulant", "stautner_puckette"],
+             randomize_skip=True),  # handled specially by GUI
 
-        # --- Modulation (Phase 3) ---
-        # Global master rate in Hz (all modulators derive from this)
-        "mod_master_rate": 0.0,  # 0 = no modulation (backward compatible)
+    ParamDef("matrix_seed", T.INT, section="matrix",
+             default=42, randomize_skip=True),
 
-        # Per-node rate multipliers (integer ratios for rhythmic relationships)
-        "mod_node_rate_mult": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    # --- Modulation ---
+    ParamDef("mod_master_rate", T.FLOAT, section="modulation",
+             default=0.0,
+             range=(0.0, 1000.0)),
 
-        # Correlation: 1.0 = all nodes in sync, 0.0 = evenly spread phases
-        "mod_correlation": 1.0,
+    ParamDef("mod_node_rate_mult", T.FLOAT_ARRAY, section="modulation",
+             default=[1.0] * 8, array_size=8,
+             randomize_skip=True),
 
-        # Waveform: 0=sine, 1=triangle, 2=sample-and-hold
-        "mod_waveform": 0,
+    ParamDef("mod_correlation", T.FLOAT, section="modulation",
+             default=1.0,
+             range=(0.0, 1.0)),
 
-        # Per-target modulation depth (0 = off)
-        # Delay: depth in samples (+/- depth around base delay time)
-        "mod_depth_delay": [0.0] * 8,
-        # Damping: coefficient offset (+/- depth around base damping)
-        "mod_depth_damping": [0.0] * 8,
-        # Output gains: multiplier offset (+/- depth * base gain)
-        "mod_depth_output": [0.0] * 8,
-        # Matrix blend depth: 0-1 (how far to blend toward matrix2)
-        "mod_depth_matrix": 0.0,
+    ParamDef("mod_waveform", T.CHOICE, section="modulation",
+             default=0, range=(0, 2),
+             choices=["Sine", "Triangle", "Sample & Hold"]),
 
-        # Per-target rate scale factors (multiplied with master_rate * node_mult)
-        "mod_rate_scale_delay": 1.0,
-        "mod_rate_scale_damping": 1.0,
-        "mod_rate_scale_output": 1.0,
-        "mod_rate_matrix": 0.0,  # Hz, independent of master for flexibility
+    ParamDef("mod_depth_delay", T.FLOAT_ARRAY, section="modulation",
+             default=[0.0] * 8,
+             range=(0.0, 100.0), array_size=8),
 
-        # Second matrix for topology modulation
-        "mod_matrix2_type": "random_orthogonal",
-        "mod_matrix2_seed": 137,
-    }
+    ParamDef("mod_depth_damping", T.FLOAT_ARRAY, section="modulation",
+             default=[0.0] * 8,
+             range=(0.0, 0.5), array_size=8),
 
+    ParamDef("mod_depth_output", T.FLOAT_ARRAY, section="modulation",
+             default=[0.0] * 8,
+             range=(0.0, 1.0), array_size=8),
 
-# Ranges for ML exploration (min, max) — continuous params only.
-PARAM_RANGES = {
-    "feedback_gain": (0.0, 2.0),
-    "wet_dry": (0.0, 1.0),
-    "diffusion": (0.0, 0.7),
-    "saturation": (0.0, 1.0),
-    "pre_delay": (0, int(250 / 1000 * SR)),
-    "damping_coeffs": (0.0, 0.99),       # per-node, same range
-    "delay_times": (1, int(300 / 1000 * SR)),  # per-node
-    "input_gains": (0.0, 0.5),           # per-node
-    "output_gains": (0.0, 2.0),          # per-node
-    "stereo_width": (0.0, 1.0),
-    "node_pans": (-1.0, 1.0),            # per-node
-    # Modulation ranges
-    "mod_master_rate": (0.0, 1000.0),     # Hz — spans slow to audio-rate
-    "mod_depth_delay": (0.0, 100.0),      # samples
-    "mod_depth_damping": (0.0, 0.5),      # coefficient offset
-    "mod_depth_output": (0.0, 1.0),       # gain multiplier offset
-    "mod_depth_matrix": (0.0, 1.0),       # blend fraction
-    "mod_correlation": (0.0, 1.0),
-    "mod_rate_scale_delay": (0.01, 10.0),
-    "mod_rate_scale_damping": (0.01, 10.0),
-    "mod_rate_scale_output": (0.01, 10.0),
-    "mod_rate_matrix": (0.0, 1000.0),
-}
+    ParamDef("mod_depth_matrix", T.FLOAT, section="modulation",
+             default=0.0,
+             range=(0.0, 1.0)),
 
-# Section groupings for GUI layout and lock feature
-PARAM_SECTIONS = {
-    "global": ["feedback_gain", "wet_dry", "diffusion", "saturation",
-               "stereo_width", "pre_delay"],
-    "matrix": ["matrix_type", "matrix_seed"],
-    "modulation": ["mod_master_rate", "mod_depth_delay", "mod_depth_damping",
-                   "mod_depth_output", "mod_depth_matrix", "mod_correlation",
-                   "mod_waveform", "mod_node_rate_mult",
-                   "mod_rate_scale_delay", "mod_rate_scale_damping",
-                   "mod_rate_scale_output", "mod_rate_matrix",
-                   "mod_matrix2_type", "mod_matrix2_seed"],
-    "delay_times": ["delay_times"],
-    "damping": ["damping_coeffs"],
-    "input_gains": ["input_gains"],
-    "output_gains": ["output_gains"],
-    "node_pans": ["node_pans"],
-}
+    ParamDef("mod_rate_scale_delay", T.FLOAT, section="modulation",
+             default=1.0,
+             range=(0.01, 10.0)),
 
-# Integer/choice parameter value counts (for randomization)
-CHOICE_RANGES = {
-    "mod_waveform": 3,          # sine, triangle, sample_hold
-    "diffusion_stages": 4,      # 1-4
-}
+    ParamDef("mod_rate_scale_damping", T.FLOAT, section="modulation",
+             default=1.0,
+             range=(0.01, 10.0)),
 
+    ParamDef("mod_rate_scale_output", T.FLOAT, section="modulation",
+             default=1.0,
+             range=(0.01, 10.0)),
 
-def bypass_params():
-    """All params at their no-effect / clean position (dry pass-through)."""
-    return {
-        "delay_times": [int(29.7 / 1000 * SR)] * 8,
-        "damping_coeffs": [0.0] * 8,
-        "feedback_gain": 0.0,
-        "input_gains": [1.0 / 8] * 8,
-        "output_gains": [1.0] * 8,
-        "pre_delay": 0,
-        "diffusion": 0.0,
-        "diffusion_stages": 4,
-        "diffusion_delays": [
-            int(5.3 / 1000 * SR),
-            int(7.9 / 1000 * SR),
-            int(11.7 / 1000 * SR),
-            int(16.1 / 1000 * SR),
-        ],
-        "wet_dry": 0.0,
-        "saturation": 0.0,
-        "matrix_type": "householder",
-        "matrix_seed": 42,
-        "node_pans": [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0],
-        "stereo_width": 1.0,
-        "mod_master_rate": 0.0,
-        "mod_node_rate_mult": [1.0] * 8,
-        "mod_correlation": 1.0,
-        "mod_waveform": 0,
-        "mod_depth_delay": [0.0] * 8,
-        "mod_depth_damping": [0.0] * 8,
-        "mod_depth_output": [0.0] * 8,
-        "mod_depth_matrix": 0.0,
-        "mod_rate_scale_delay": 1.0,
-        "mod_rate_scale_damping": 1.0,
-        "mod_rate_scale_output": 1.0,
-        "mod_rate_matrix": 0.0,
-        "mod_matrix2_type": "random_orthogonal",
-        "mod_matrix2_seed": 137,
-    }
+    ParamDef("mod_rate_matrix", T.FLOAT, section="modulation",
+             default=0.0,
+             range=(0.0, 1000.0)),
+
+    ParamDef("mod_matrix2_type", T.CHOICE, section="modulation",
+             default="random_orthogonal",
+             choices=["householder", "hadamard", "diagonal",
+                      "random_orthogonal", "circulant", "stautner_puckette"],
+             randomize_skip=True),
+
+    ParamDef("mod_matrix2_seed", T.INT, section="modulation",
+             default=137, randomize_skip=True),
+]
+
+SCHEMA = ParamSchema(_PARAMS)
+
+# ── Legacy API (unchanged) ────────────────────────────────────────────
+
+default_params = SCHEMA.default_params
+bypass_params = SCHEMA.bypass_params
+PARAM_RANGES = SCHEMA.param_ranges()
+PARAM_SECTIONS = SCHEMA.param_sections()
+CHOICE_RANGES = SCHEMA.choice_ranges()

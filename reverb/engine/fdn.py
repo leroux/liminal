@@ -1,7 +1,7 @@
 """8-node Feedback Delay Network — the core reverb engine.
 
 Signal flow:
-    Input → [Pre-delay] → [Input Diffusion] → FDN Loop → [Wet/Dry Mix] → Output
+    Input -> [Pre-delay] -> [Input Diffusion] -> FDN Loop -> [Wet/Dry Mix] -> Output
 
 FDN Loop (per sample):
     1. Read from 8 delay lines
@@ -13,10 +13,14 @@ FDN Loop (per sample):
     7. Sum weighted outputs (output gains)
 """
 
+import json
 import logging
 import time
 
 import numpy as np
+
+from reverb_rust import render_fdn as _rust_render
+from reverb_rust import render_fdn_stereo as _rust_render_stereo
 
 log = logging.getLogger(__name__)
 
@@ -24,22 +28,19 @@ N = 8  # number of delay lines
 
 
 def _render_mono(input_audio, params, chunk_callback=None, chunk_size=4096):
-    """Route a mono channel to the appropriate engine."""
-    has_mod = (
-        params.get("mod_master_rate", 0.0) > 0.0 and (
-            any(d > 0 for d in params.get("mod_depth_delay", [0] * 8)) or
-            any(d > 0 for d in params.get("mod_depth_damping", [0] * 8)) or
-            any(d > 0 for d in params.get("mod_depth_output", [0] * 8)) or
-            params.get("mod_depth_matrix", 0.0) > 0.0
-        )
-    )
+    """Render a mono channel through the Rust FDN engine."""
+    params_json = json.dumps(params)
+    interleaved = _rust_render(input_audio.astype(np.float64), params_json)
+    # Rust returns interleaved stereo [L0, R0, L1, R1, ...] -> reshape to (n, 2)
+    result = interleaved.reshape(-1, 2)
 
-    if has_mod:
-        from reverb.engine.numba_fdn_mod import render_fdn_mod
-        return render_fdn_mod(input_audio, params, chunk_callback, chunk_size)
-    else:
-        from reverb.engine.numba_fdn import render_fdn_fast
-        return render_fdn_fast(input_audio, params, chunk_callback, chunk_size)
+    if chunk_callback is not None:
+        for start in range(0, len(result), chunk_size):
+            end = min(start + chunk_size, len(result))
+            if not chunk_callback(result[start:end]):
+                break
+
+    return result
 
 
 def render_fdn(input_audio: np.ndarray, params: dict,
@@ -47,11 +48,8 @@ def render_fdn(input_audio: np.ndarray, params: dict,
     """The single entry point. GUI sliders, ML optimizers, and batch
     rendering all call this same function.
 
-    Routes to the modulated engine when any modulation is active,
-    otherwise uses the static (faster) path.
-
     Args:
-        input_audio: float64 array — mono (samples,) or stereo (samples, 2)
+        input_audio: float64 array -- mono (samples,) or stereo (samples, 2)
         params: parameter dict (see engine/params.py)
         chunk_callback: if provided, called with each rendered chunk (np array).
             Return True to continue, False to stop early.
@@ -64,15 +62,6 @@ def render_fdn(input_audio: np.ndarray, params: dict,
     t0 = time.perf_counter()
     n_samples = input_audio.shape[0]
     duration = n_samples / SR
-    has_mod = (
-        params.get("mod_master_rate", 0.0) > 0.0 and (
-            any(d > 0 for d in params.get("mod_depth_delay", [0] * 8)) or
-            any(d > 0 for d in params.get("mod_depth_damping", [0] * 8)) or
-            any(d > 0 for d in params.get("mod_depth_output", [0] * 8)) or
-            params.get("mod_depth_matrix", 0.0) > 0.0
-        )
-    )
-    engine = "mod" if has_mod else "static"
     stereo_in = input_audio.ndim == 2
 
     if stereo_in:
@@ -80,23 +69,24 @@ def render_fdn(input_audio: np.ndarray, params: dict,
             mono = input_audio.mean(axis=1)
             result = _render_mono(mono, params, chunk_callback, chunk_size)
         else:
-            wet_params = dict(params)
-            wet_params["wet_dry"] = 1.0
-            n = input_audio.shape[0]
-            wet = np.zeros((n, 2), dtype=np.float64)
-            for ch in range(input_audio.shape[1]):
-                wet += _render_mono(input_audio[:, ch], wet_params)
+            params_json = json.dumps(dict(params, wet_dry=1.0))
+            left = input_audio[:, 0].astype(np.float64)
+            right = (input_audio[:, 1] if input_audio.shape[1] > 1
+                     else input_audio[:, 0]).astype(np.float64)
+            out_l, out_r = _rust_render_stereo(left, right, params_json)
 
             mix = float(params.get("wet_dry", 1.0))
-            dry = np.column_stack([input_audio[:, 0],
-                                   input_audio[:, 1] if input_audio.shape[1] > 1
-                                   else input_audio[:, 0]])
-            result = dry * (1.0 - mix) + wet * mix
+            dry_l = input_audio[:, 0]
+            dry_r = input_audio[:, 1] if input_audio.shape[1] > 1 else input_audio[:, 0]
+            result = np.column_stack([
+                dry_l * (1.0 - mix) + out_l * mix,
+                dry_r * (1.0 - mix) + out_r * mix,
+            ])
     else:
         result = _render_mono(input_audio, params, chunk_callback, chunk_size)
 
     elapsed = time.perf_counter() - t0
     rtf = duration / elapsed if elapsed > 0 else float('inf')
-    log.info("render %.1fs audio in %.3fs (%s, %s, %.0fx RT)",
-             duration, elapsed, engine, "stereo" if stereo_in else "mono", rtf)
+    log.info("render %.1fs audio in %.3fs (rust, %s, %.0fx RT)",
+             duration, elapsed, "stereo" if stereo_in else "mono", rtf)
     return result

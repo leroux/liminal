@@ -7,36 +7,10 @@ Usage:
 import argparse
 import json
 import numpy as np
-from scipy.io import wavfile
 
 from reverb.engine.params import SR, default_params
 from reverb.engine.fdn import render_fdn
-
-
-def load_wav(path):
-    sr, data = wavfile.read(path)
-    if data.dtype == np.int16:
-        audio = data.astype(np.float64) / 32768.0
-    elif data.dtype == np.int32:
-        audio = data.astype(np.float64) / 2147483648.0
-    else:
-        audio = data.astype(np.float64)
-    if sr != SR:
-        from scipy.signal import resample_poly
-        from math import gcd
-        g = gcd(SR, sr)
-        audio = resample_poly(audio, SR // g, sr // g, axis=0)
-    return audio, SR
-
-
-def save_wav(path, audio, sr=SR):
-    peak = np.max(np.abs(audio))
-    if peak > 1.0:
-        audio = audio / peak * 0.95
-    elif 0 < peak < 0.1:
-        audio = audio / peak * 0.9
-    out = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-    wavfile.write(path, sr, out)
+from shared.audio import load_wav, save_wav
 
 
 def main():
@@ -71,7 +45,7 @@ def main():
     if args.pre_delay_ms is not None:
         params["pre_delay"] = int(args.pre_delay_ms / 1000 * SR)
 
-    audio, sr = load_wav(args.input)
+    audio, sr = load_wav(args.input, SR)
     n = audio.shape[0] if audio.ndim == 2 else len(audio)
     ch = "stereo" if audio.ndim == 2 else "mono"
     print(f"Loaded {args.input}: {n} samples, {sr} Hz, {ch}")

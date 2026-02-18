@@ -1,55 +1,33 @@
 """FDN Reverb GUI — parameter control with WAV file rendering and playback.
 
-Run: uv run python gui/gui.py
-
-Single page with all params. Play button auto-renders if params changed.
+Tabs: Parameters · Presets · Waveforms · Spectrograms · Signal Flow · Guide
 """
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
-import numpy as np
-import sounddevice as sd
-from scipy.io import wavfile
-import json
+import math
 import os
-import sys
-import threading
-import time
+import tkinter as tk
+from tkinter import ttk
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import numpy as np
+
 from reverb.engine.fdn import render_fdn
-from reverb.engine.params import default_params, PARAM_RANGES, SR
-from reverb.primitives.matrix import MATRIX_TYPES, get_matrix, nearest_unitary, is_unitary
+from reverb.engine.params import (
+    SR, SCHEMA, default_params, bypass_params, PARAM_RANGES, PARAM_SECTIONS, CHOICE_RANGES,
+)
+from reverb.engine.matrix import MATRIX_TYPES, get_matrix, nearest_unitary, is_unitary
 from shared.llm_guide_text import REVERB_GUIDE, REVERB_PARAM_DESCRIPTIONS
-from shared.llm_tuner import LLMTuner
-from shared.streaming import safety_check, normalize_output
-from shared.waveform import (draw_waveform, draw_spectrogram,
-                              WAVE_PAD_LEFT, WAVE_PAD_RIGHT,
-                              SPEC_PAD_LEFT, SPEC_PAD_RIGHT)
+from shared.gui import PedalGUIBase, PedalConfig
 
-PRESET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets")
-TEST_SIGNALS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "audio", "test_signals")
+PRESET_DIR = os.path.join(os.path.dirname(__file__), "presets")
+DEFAULT_SOURCE = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "audio", "test_signals", "dry_chords.wav",
+)
 
-
-# --- Short always-visible descriptions for each slider ---
-SLIDER_DESCRIPTIONS = {
-    # Global
-    "feedback_gain": "0=dry  0.85=room  0.95+=long  >1.0=infinite",
-    "wet_dry": "0=dry only  0.5=equal  1.0=full wet",
-    "diffusion": "0=sharp attacks  0.5+=heavy smearing",
-    "saturation": "0=clean  0.3=warm  0.7+=distorted  tames >1.0 feedback",
-    "stereo_width": "0=mono  1=full stereo",
-    "pre_delay_ms": "0=intimate  20-50=room  100+=hall",
-    "tail_length": "rendered tail duration",
-    # Modulation
-    "mod_master_rate": "0=off  0.1=evolve  2=chorus  80+=FM",
-    "mod_depth_delay_global": "3-5=chorus  20+=pitch wobble",
-    "mod_depth_damping_global": "breathing bright/dark effect",
-    "mod_depth_output_global": "tremolo-like amplitude variation",
-    "mod_depth_matrix": "blend toward second matrix",
-    "mod_correlation": "1=synced  0=max spread (wider stereo)",
-}
+PRESET_CATEGORIES = [
+    "Plate", "Room", "Hall", "Ambient", "Modulated",
+    "Experimental", "Sound Design", "ML Generated",
+]
 
 SECTION_DESCRIPTIONS = {
     "Delay Times (ms)": "<15=small  50-80=room  long=hall  use prime-ish ratios",
@@ -61,179 +39,133 @@ SECTION_DESCRIPTIONS = {
 }
 
 
-class ReverbGUI:
+def _make_config():
+    return PedalConfig(
+        name="Reverb",
+        preset_dir=PRESET_DIR,
+        preset_categories=PRESET_CATEGORIES,
+        window_title="FDN Reverb",
+        window_geometry="1250x950",
+        default_params=default_params,
+        bypass_params=bypass_params,
+        param_ranges=PARAM_RANGES,
+        param_sections=PARAM_SECTIONS,
+        choice_ranges=CHOICE_RANGES,
+        render=render_fdn,
+        render_stereo=None,
+        guide_text=REVERB_GUIDE,
+        param_descriptions=REVERB_PARAM_DESCRIPTIONS,
+        sample_rate=SR,
+        default_source=DEFAULT_SOURCE,
+        icon_path=os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                               "icons", "reverb.png"),
+        extra_tabs=[],  # set in __init__ (needs self ref)
+        tail_param="tail_length",
+        schema=SCHEMA,
+    )
+
+
+class ReverbGUI(PedalGUIBase):
+
     def __init__(self, root):
-        self.root = root
-        self.root.title("FDN Reverb")
-        # Window / dock icon
-        _icon_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
-                                   "icons", "reverb.png")
-        if os.path.exists(_icon_path):
-            self._app_icon = tk.PhotoImage(file=_icon_path)
-            self.root.iconphoto(True, self._app_icon)
-        self.params = default_params()
-        self.source_audio = None
-        self.source_path = None
-        self.rendered_audio = None
-        self.rendered_warning = ""
-        self.rendered_params = None
-        self.rendered_metrics = None
-        self.rendering = False
-        self.sliders = {}
-        self.custom_matrix = None  # 8x8 numpy array when using custom topology
-
-        self._scroll_widgets = {}  # widget path -> (var, from_, to_)
-        self._diagram_redraw_id = None  # for debounced diagram refresh
-        self._autoplay_id = None
-        self._cursor_timer = None
-        self._cursor_canvases = []  # [(canvas, pad_left, pad_right), ...]
-        self._playback_start = None  # time.time() when sample 0 "would have started"
-        self._playback_length = 0.0  # total duration in seconds
-        self._playback_audio = None  # audio array for seeking
-        self.locks = {}            # param key -> BooleanVar (per-param lock)
-        self.section_locks = {}    # section title -> BooleanVar
-        self._param_section = {}   # param key -> section title
+        cfg = _make_config()
+        cfg.extra_tabs = [("Signal Flow", self._build_signal_flow_page)]
+        self.custom_matrix = None
+        self._param_section = {}
         self._current_section = None
+        self._diagram_redraw_id = None
+        super().__init__(root, cfg)
 
-        # Generation history for rewind/forward
-        self._gen_history = []     # list of dicts: {params, audio, metrics, warning, spectrogram}
-        self._gen_index = -1       # current position in history
-        self._gen_max = 50         # max history entries
-        self._output_device_idx = None  # None = system default
-        self._output_devices = []       # [(sd_index, name), ...]
+    # ------------------------------------------------------------------
+    # Slider helpers
+    # ------------------------------------------------------------------
 
-        default_source = os.path.join(TEST_SIGNALS_DIR, "dry_chords.wav")
-        if os.path.exists(default_source):
-            self._load_wav(default_source)
+    def _add_slider(self, parent, row, key, label, lo, hi, value, **kw):
+        """Wrap base _add_slider to track param->section mapping."""
+        row = super()._add_slider(parent, row, key, label, lo, hi, value, **kw)
+        self._param_section[key] = self._current_section
+        return row
 
-        self._build_ui()
+    def _section(self, parent, row, title, lockable=True):
+        """Section separator with optional lock and description."""
+        ttk.Separator(parent, orient="horizontal").grid(
+            row=row, column=0, columnspan=4, sticky="ew", pady=(10, 2))
+        header = ttk.Frame(parent)
+        header.grid(row=row + 1, column=0, columnspan=4, sticky="w", pady=(0, 1))
+        ttk.Label(header, text=title, font=("TkDefaultFont", 0, "bold")).pack(side="left")
+        if lockable:
+            lock_var = tk.BooleanVar(value=False)
+            self.section_locks[title] = lock_var
+            ttk.Checkbutton(header, text="\U0001F512", variable=lock_var).pack(
+                side="left", padx=(6, 0))
+        next_row = row + 2
+        if title in SECTION_DESCRIPTIONS:
+            ttk.Label(parent, text=SECTION_DESCRIPTIONS[title],
+                      foreground="#888888", font=("Helvetica", 9)).grid(
+                row=next_row, column=0, columnspan=4, sticky="w", pady=(0, 3))
+            next_row += 1
+        self._current_section = title
+        return next_row
 
-        self.llm = LLMTuner(
-            guide_text=REVERB_GUIDE,
-            param_descriptions=REVERB_PARAM_DESCRIPTIONS,
-            param_ranges=PARAM_RANGES,
-            default_params_fn=default_params,
-            root=self.root,
-        )
+    def _add_node_slider(self, parent, row, key, label, lo, hi, value,
+                         var_list, fmt=".2f", length=250):
+        """Add a per-node slider (simpler than global, no description)."""
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=0)
+        var = tk.DoubleVar(value=value)
+        slider_frame = ttk.Frame(parent)
+        slider_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=0)
+        min_text = f"{lo:{fmt}}"
+        max_text = f"{hi:{fmt}}"
+        ttk.Label(slider_frame, text=min_text, width=len(min_text) + 1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
+        scale = ttk.Scale(slider_frame, from_=lo, to=hi, variable=var,
+                          orient="horizontal", length=length)
+        scale.pack(side="left", fill="x", expand=True)
+        ttk.Label(slider_frame, text=max_text, width=len(max_text) + 1,
+                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
+        self._bind_scroll(scale, var, lo, hi)
+        entry_var = tk.StringVar(value=f"{value:{fmt}}")
+        entry = ttk.Entry(parent, textvariable=entry_var, width=7, justify="right")
+        entry.grid(row=row, column=2, sticky="w", pady=0)
 
-    def _build_ui(self):
-        self.root.configure(padx=10, pady=10)
+        def _on_slider_change(*_a, v=var, ev=entry_var, f=fmt):
+            ev.set(f"{v.get():{f}}")
+        var.trace_add("write", _on_slider_change)
 
-        # Top bar
-        top = ttk.Frame(self.root)
-        top.pack(fill="x", pady=(0, 8))
+        def _on_entry_return(event, v=var, ev=entry_var, _lo=lo, _hi=hi, f=fmt):
+            try:
+                val = float(ev.get())
+                val = max(_lo, min(_hi, val))
+                v.set(val)
+                self._schedule_autoplay()
+            except ValueError:
+                ev.set(f"{v.get():{f}}")
+        entry.bind("<Return>", _on_entry_return)
+        entry.bind("<FocusOut>", _on_entry_return)
+        var_list.append(var)
+        lock_var = tk.BooleanVar(value=False)
+        self.locks[key] = lock_var
+        self._param_section[key] = self._current_section
+        ttk.Checkbutton(parent, variable=lock_var).grid(row=row, column=3, pady=0)
+        scale.bind("<ButtonRelease-1>", lambda e: self._schedule_autoplay())
+        return row + 1
 
-        ttk.Button(top, text="Load WAV", command=self._on_load_wav).pack(side="left", padx=2)
-        self.source_label = ttk.Label(top, text=self._source_text(), width=30, anchor="w")
-        self.source_label.pack(side="left", padx=5)
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=5)
-        ttk.Button(top, text="Play Dry", command=self._on_play_dry).pack(side="left", padx=2)
-        ttk.Button(top, text="Play", command=self._on_play).pack(side="left", padx=2)
-        ttk.Button(top, text="Stop", command=self._on_stop).pack(side="left", padx=2)
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=5)
-        ttk.Button(top, text="Save WAV", command=self._on_save_wav).pack(side="left", padx=2)
-        ttk.Button(top, text="Save Preset", command=self._on_save_preset).pack(side="left", padx=2)
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=5)
-        ttk.Button(top, text="Randomize & Play", command=self._on_randomize_and_play).pack(side="left", padx=2)
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=5)
-        self._gen_back_btn = ttk.Button(top, text="<", width=2, command=self._on_gen_back)
-        self._gen_back_btn.pack(side="left", padx=1)
-        self._gen_label_var = tk.StringVar(value="Gen 0")
-        ttk.Label(top, textvariable=self._gen_label_var, width=8, anchor="center").pack(side="left")
-        self._gen_fwd_btn = ttk.Button(top, text=">", width=2, command=self._on_gen_forward)
-        self._gen_fwd_btn.pack(side="left", padx=1)
-        self._update_gen_buttons()
+    def _is_locked(self, key):
+        """Check individual lock or section-level lock."""
+        if key in self.locks and self.locks[key].get():
+            return True
+        section = self._param_section.get(key)
+        if section and section in self.section_locks and self.section_locks[section].get():
+            return True
+        return False
 
-        self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(top, textvariable=self.status_var, width=25, anchor="e").pack(side="right")
-        ttk.Button(top, text="\u21bb", width=2, command=self._refresh_devices).pack(side="right", padx=1)
-        self._device_combo = ttk.Combobox(top, state="readonly", width=28)
-        self._device_combo.pack(side="right", padx=2)
-        self._device_combo.bind("<<ComboboxSelected>>", self._on_device_changed)
-        ttk.Label(top, text="Output:").pack(side="right", padx=(5, 2))
-        self._refresh_devices()
-
-        # Two pages: Params and Presets
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill="both", expand=True)
-
-        params_page = ttk.Frame(notebook)
-        notebook.add(params_page, text="Parameters")
-        self._build_params_page(params_page)
-
-        presets_page = ttk.Frame(notebook, padding=10)
-        notebook.add(presets_page, text="Presets")
-        self._build_presets_page(presets_page)
-
-        desc_page = ttk.Frame(notebook, padding=10)
-        notebook.add(desc_page, text="Signal Flow")
-        self._build_description_page(desc_page)
-
-        waveforms_page = ttk.Frame(notebook, padding=5)
-        notebook.add(waveforms_page, text="Waveforms")
-        self._build_waveforms_page(waveforms_page)
-
-        spectrograms_page = ttk.Frame(notebook, padding=5)
-        notebook.add(spectrograms_page, text="Spectrograms")
-        self._build_spectrograms_page(spectrograms_page)
-
-        guide_page = ttk.Frame(notebook, padding=10)
-        notebook.add(guide_page, text="Guide")
-        self._build_guide_page(guide_page)
-
-        # Update description when switching to that tab
-        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-        self._notebook = notebook
-
-        # Global mousewheel handler — routes to scale under cursor
-        self.root.bind_all("<MouseWheel>", self._on_global_scroll)
-        # Tk 9.0+ on macOS: trackpad generates TouchpadScroll instead of MouseWheel
-        try:
-            self.root.bind_all("<TouchpadScroll>", self._on_global_scroll)
-        except tk.TclError:
-            pass
+    # ------------------------------------------------------------------
+    # Parameters tab
+    # ------------------------------------------------------------------
 
     def _build_params_page(self, parent):
-        # Responsive container for params + AI chat
-        self._params_ai_container = ttk.Frame(parent)
-        self._params_ai_container.pack(fill="both", expand=True)
+        inner = self._build_params_container(parent)
 
-        self._params_scroll_frame = ttk.Frame(self._params_ai_container)
-        scroll_container = self._params_scroll_frame
-
-        scroll_canvas = tk.Canvas(scroll_container, highlightthickness=0)
-        vscrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=scroll_canvas.yview)
-        hscrollbar = ttk.Scrollbar(scroll_container, orient="horizontal", command=scroll_canvas.xview)
-        scroll_canvas.configure(yscrollcommand=vscrollbar.set, xscrollcommand=hscrollbar.set)
-        hscrollbar.pack(side="bottom", fill="x")
-        vscrollbar.pack(side="right", fill="y")
-        scroll_canvas.pack(side="left", fill="both", expand=True)
-
-        inner = ttk.Frame(scroll_canvas)
-        scroll_canvas.create_window((0, 0), window=inner, anchor="nw")
-
-        def _on_configure(event):
-            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
-        inner.bind("<Configure>", _on_configure)
-
-        # Forward mousewheel to the scroll canvas when hovering over it
-        def _on_scroll_canvas_wheel(event):
-            raw = event.delta if event.delta else (-1 if event.num == 5 else 1)
-            y = raw & 0xFFFF
-            if y >= 0x8000:
-                y -= 0x10000
-            if event.state & 1:  # Shift held → horizontal scroll
-                scroll_canvas.xview_scroll(-y, "units")
-            else:
-                scroll_canvas.yview_scroll(-y, "units")
-        scroll_canvas.bind("<MouseWheel>", _on_scroll_canvas_wheel)
-        try:
-            scroll_canvas.bind("<TouchpadScroll>", _on_scroll_canvas_wheel)
-        except tk.TclError:
-            pass
-        self._params_scroll_canvas = scroll_canvas
-
-        # Two-column layout: left = global/matrix/XY, right = per-node sliders
         columns = ttk.Frame(inner)
         columns.pack(side="top", fill="both", expand=True)
         left = ttk.Frame(columns, padding=5)
@@ -247,7 +179,7 @@ class ReverbGUI:
 
         # --- Global ---
         row = self._section(f, row, "Global")
-        ttk.Button(f, text="Randomize Knobs", command=self._on_randomize_knobs).grid(
+        ttk.Button(f, text="Randomize Knobs", command=self._randomize_knobs).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(0, 4))
         row += 1
         row = self._add_slider(f, row, "feedback_gain", "Feedback Gain", 0.0, 2.0,
@@ -266,94 +198,25 @@ class ReverbGUI:
         row = self._add_slider(f, row, "tail_length", "Tail Length (s)", 0.0, 60.0, 2.0,
                                length=220)
 
-        # Matrix type
-        matrix_frame = ttk.Frame(f)
-        matrix_frame.grid(row=row, column=0, sticky="w", pady=2)
-        ttk.Label(matrix_frame, text="Matrix Topology:", font=("TkDefaultFont", 0, "bold")).pack(anchor="w")
-        ttk.Label(matrix_frame, text="householder=smooth  hadamard=bright  diagonal=metallic",
-                  foreground="#888888", font=("Helvetica", 9)).pack(anchor="w")
+        # Matrix topology combobox
+        ttk.Label(f, text="Matrix Topology:").grid(row=row, column=0, sticky="w", padx=4)
         self.matrix_var = tk.StringVar(value=self.params.get("matrix_type", "householder"))
         topology_options = list(MATRIX_TYPES.keys()) + ["custom"]
         combo = ttk.Combobox(f, textvariable=self.matrix_var, values=topology_options,
-                     state="readonly", width=20)
-        combo.grid(row=row, column=1, sticky="w", pady=2)
+                             state="readonly", width=20)
+        combo.grid(row=row, column=1, sticky="w", padx=4)
         combo.bind("<<ComboboxSelected>>", self._on_topology_changed)
+        self.locks["matrix_type"] = tk.BooleanVar(value=False)
+        self._param_section["matrix_type"] = "Global"
         row += 1
 
         # --- Matrix Heatmap ---
         row = self._section(f, row, "Feedback Matrix")
-
-        heatmap_controls = ttk.Frame(f)
-        heatmap_controls.grid(row=row, column=0, columnspan=3, sticky="w")
-        row += 1
-
-        ttk.Button(heatmap_controls, text="Snap Unitary",
-                   command=self._on_snap_unitary).pack(side="left", padx=2)
-        ttk.Button(heatmap_controls, text="Use Custom",
-                   command=self._on_use_custom_matrix).pack(side="left", padx=2)
-        ttk.Button(heatmap_controls, text="Randomize",
-                   command=self._on_randomize_matrix).pack(side="left", padx=2)
-        self.random_unitary_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(heatmap_controls, text="Unitary",
-                        variable=self.random_unitary_var).pack(side="left", padx=2)
-        self.unitary_label = ttk.Label(heatmap_controls, text="")
-        self.unitary_label.pack(side="left", padx=5)
-
-        # 8x8 heatmap canvas
-        self.heatmap_size = 200
-        self.heatmap_cell = self.heatmap_size // 8
-        self.heatmap_canvas = tk.Canvas(f, width=self.heatmap_size + 40,
-                                         height=self.heatmap_size + 40,
-                                         bg="gray20", highlightthickness=0)
-        self.heatmap_canvas.grid(row=row, column=0, columnspan=3, pady=3)
-        self.heatmap_canvas.bind("<Button-1>", self._on_heatmap_click)
-        self.heatmap_canvas.bind("<B1-Motion>", self._on_heatmap_drag)
-        self.heatmap_canvas.bind("<Button-3>", self._on_heatmap_right_click)
-        row += 1
-
-        # Value editor for selected cell
-        edit_frame = ttk.Frame(f)
-        edit_frame.grid(row=row, column=0, columnspan=3, sticky="w")
-        row += 1
-        ttk.Label(edit_frame, text="Cell:").pack(side="left")
-        self.cell_label = ttk.Label(edit_frame, text="(-, -)", width=6)
-        self.cell_label.pack(side="left", padx=2)
-        ttk.Label(edit_frame, text="Val:").pack(side="left", padx=(5, 0))
-        self.cell_value_var = tk.StringVar(value="0.00")
-        cell_entry = ttk.Entry(edit_frame, textvariable=self.cell_value_var, width=8)
-        cell_entry.pack(side="left", padx=2)
-        cell_entry.bind("<Return>", self._on_cell_value_enter)
-        self.selected_cell = None
-
-        # Initialize heatmap with current topology
-        self._load_matrix_from_topology()
-        self._draw_heatmap()
+        row = self._build_heatmap_ui(f, row)
 
         # --- XY Pad ---
         row = self._section(f, row, "XY Pad", lockable=False)
-        xy_controls = ttk.Frame(f)
-        xy_controls.grid(row=row, column=0, columnspan=3, sticky="w")
-        row += 1
-
-        ttk.Label(xy_controls, text="X:").pack(side="left")
-        self.xy_x_var = tk.StringVar(value="feedback_gain")
-        xy_params = ["feedback_gain", "wet_dry", "diffusion", "saturation", "pre_delay_ms",
-                      "stereo_width", "mod_master_rate", "mod_depth_delay_global"]
-        ttk.Combobox(xy_controls, textvariable=self.xy_x_var, values=xy_params,
-                     state="readonly", width=15).pack(side="left", padx=(2, 10))
-        ttk.Label(xy_controls, text="Y:").pack(side="left")
-        self.xy_y_var = tk.StringVar(value="diffusion")
-        ttk.Combobox(xy_controls, textvariable=self.xy_y_var, values=xy_params,
-                     state="readonly", width=15).pack(side="left", padx=2)
-
-        self.xy_size = 200
-        self.xy_canvas = tk.Canvas(f, width=self.xy_size, height=self.xy_size, bg="black",
-                                   highlightthickness=1, highlightbackground="gray")
-        self.xy_canvas.grid(row=row, column=0, columnspan=3, pady=3)
-        self.xy_canvas.bind("<B1-Motion>", self._on_xy_drag)
-        self.xy_canvas.bind("<Button-1>", self._on_xy_drag)
-        self._xy_draw_crosshair(self.xy_size // 2, self.xy_size // 2)
-        row += 1
+        row = self._build_xy_pad(f, row)
 
         # --- Modulation ---
         row = self._section(f, row, "Modulation")
@@ -370,26 +233,24 @@ class ReverbGUI:
         row = self._add_slider(f, row, "mod_correlation", "Correlation",
                                0.0, 1.0, 1.0, length=220)
 
-        wf_frame = ttk.Frame(f)
-        wf_frame.grid(row=row, column=0, sticky="w", pady=2)
-        ttk.Label(wf_frame, text="Mod Waveform:", font=("TkDefaultFont", 0, "bold")).pack(anchor="w")
-        ttk.Label(wf_frame, text="sine=smooth  triangle=linear  S&H=random",
-                  foreground="#888888", font=("Helvetica", 9)).pack(anchor="w")
+        # Mod waveform combobox
+        ttk.Label(f, text="Mod Waveform:").grid(row=row, column=0, sticky="w", padx=4)
         self.mod_waveform_var = tk.StringVar(value="sine")
-        wf_combo = ttk.Combobox(f, textvariable=self.mod_waveform_var,
-            values=["sine", "triangle", "sample_hold"], state="readonly", width=15)
-        wf_combo.grid(row=row, column=1, sticky="w", pady=2)
-        wf_lock = tk.BooleanVar(value=False)
-        self.locks["mod_waveform"] = wf_lock
+        ttk.Combobox(f, textvariable=self.mod_waveform_var,
+                     values=["sine", "triangle", "sample_hold"],
+                     state="readonly", width=15).grid(row=row, column=1, sticky="w", padx=4)
+        self.locks["mod_waveform"] = tk.BooleanVar(value=False)
         self._param_section["mod_waveform"] = self._current_section
-        ttk.Checkbutton(f, variable=wf_lock).grid(row=row, column=3, pady=2)
+        ttk.Checkbutton(f, variable=self.locks["mod_waveform"]).grid(row=row, column=3)
         row += 1
 
         f.columnconfigure(1, weight=1)
 
         # Sync XY crosshair when sliders change
+        xy_params = list(self._xy_ranges.keys())
         for key in xy_params:
-            self.sliders[key].trace_add("write", lambda *a: self._xy_sync())
+            if key in self.sliders:
+                self.sliders[key].trace_add("write", lambda *a: self._xy_sync())
         self.xy_x_var.trace_add("write", lambda *a: self._xy_sync())
         self.xy_y_var.trace_add("write", lambda *a: self._xy_sync())
 
@@ -401,58 +262,54 @@ class ReverbGUI:
         # ============ RIGHT COLUMN ============
         f = right
         row = 0
-        slider_len = 250
+        sl = 250
 
-        # --- Per-node delay times ---
         row = self._section(f, row, "Delay Times (ms)")
         self.delay_sliders = []
         for i in range(8):
             ms = self.params["delay_times"][i] / SR * 1000
-            row = self._add_node_slider(f, row, f"delay_{i}", f"Node {i}", 0.5, 300.0, ms,
-                                        self.delay_sliders, fmt=".1f", length=slider_len)
+            row = self._add_node_slider(f, row, f"delay_{i}", f"Node {i}",
+                                        0.5, 300.0, ms, self.delay_sliders,
+                                        fmt=".1f", length=sl)
 
-        # --- Per-node damping ---
         row = self._section(f, row, "Damping (per node)")
         self.damping_sliders = []
         for i in range(8):
-            row = self._add_node_slider(f, row, f"damp_{i}", f"Node {i}", 0.0, 0.99,
-                                        self.params["damping_coeffs"][i],
-                                        self.damping_sliders, fmt=".2f", length=slider_len)
+            row = self._add_node_slider(f, row, f"damp_{i}", f"Node {i}",
+                                        0.0, 0.99, self.params["damping_coeffs"][i],
+                                        self.damping_sliders, fmt=".2f", length=sl)
 
-        # --- Input gains ---
         row = self._section(f, row, "Input Gains")
         self.input_gain_sliders = []
         for i in range(8):
-            row = self._add_node_slider(f, row, f"ig_{i}", f"Node {i}", 0.0, 0.5,
-                                        self.params["input_gains"][i],
-                                        self.input_gain_sliders, fmt=".3f", length=slider_len)
+            row = self._add_node_slider(f, row, f"ig_{i}", f"Node {i}",
+                                        0.0, 0.5, self.params["input_gains"][i],
+                                        self.input_gain_sliders, fmt=".3f", length=sl)
 
-        # --- Output gains ---
         row = self._section(f, row, "Output Gains")
         self.output_gain_sliders = []
         for i in range(8):
-            row = self._add_node_slider(f, row, f"og_{i}", f"Node {i}", 0.0, 2.0,
-                                        self.params["output_gains"][i],
-                                        self.output_gain_sliders, fmt=".2f", length=slider_len)
+            row = self._add_node_slider(f, row, f"og_{i}", f"Node {i}",
+                                        0.0, 2.0, self.params["output_gains"][i],
+                                        self.output_gain_sliders, fmt=".2f", length=sl)
 
-        # --- Node Pans ---
         row = self._section(f, row, "Node Pans (L/R)")
         self.node_pan_sliders = []
         default_pans = self.params.get("node_pans",
             [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0])
         for i in range(8):
-            row = self._add_node_slider(f, row, f"pan_{i}", f"Node {i}", -1.0, 1.0,
-                                        default_pans[i],
-                                        self.node_pan_sliders, fmt=".2f", length=slider_len)
+            row = self._add_node_slider(f, row, f"pan_{i}", f"Node {i}",
+                                        -1.0, 1.0, default_pans[i],
+                                        self.node_pan_sliders, fmt=".2f", length=sl)
 
-        # --- Per-node rate multipliers ---
         row = self._section(f, row, "Mod Rate Multipliers")
         self.mod_rate_mult_sliders = []
         for i in range(8):
-            row = self._add_node_slider(f, row, f"mrm_{i}", f"Node {i}", 0.25, 4.0, 1.0,
-                                        self.mod_rate_mult_sliders, fmt=".2f", length=slider_len)
+            row = self._add_node_slider(f, row, f"mrm_{i}", f"Node {i}",
+                                        0.25, 4.0, 1.0,
+                                        self.mod_rate_mult_sliders, fmt=".2f", length=sl)
 
-        # Schedule diagram redraw when per-node sliders change
+        # Diagram redraw on per-node changes
         for var_list in (self.delay_sliders, self.damping_sliders,
                          self.input_gain_sliders, self.output_gain_sliders,
                          self.node_pan_sliders, self.mod_rate_mult_sliders):
@@ -461,643 +318,433 @@ class ReverbGUI:
 
         f.columnconfigure(1, weight=1)
 
-        # Auto-play on discrete parameter change (comboboxes)
+        # Autoplay on discrete param changes
         self.matrix_var.trace_add("write", lambda *_: self._schedule_autoplay())
         self.mod_waveform_var.trace_add("write", lambda *_: self._schedule_autoplay())
 
-        # ============ AI TUNER (responsive right/bottom) ============
-        self._ai_chat_frame = ttk.Frame(self._params_ai_container)
-        self._build_ai_prompt(self._ai_chat_frame)
-        self._ai_layout_mode = None
-        self._params_ai_container.bind("<Configure>", self._on_ai_layout_configure)
-        self._apply_ai_layout("vertical")
+    # ------------------------------------------------------------------
+    # Heatmap UI
+    # ------------------------------------------------------------------
 
-    def _build_ai_prompt(self, parent):
-        """Build the AI tuner widget group — output on top, input at bottom."""
-        ttk.Label(parent, text="AI Tuner", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=5, pady=(5, 2))
+    def _build_heatmap_ui(self, parent, row):
+        controls = ttk.Frame(parent)
+        controls.grid(row=row, column=0, columnspan=4, sticky="w")
+        row += 1
 
-        # Response/output area (top, expands to fill available space)
-        resp_frame = ttk.Frame(parent)
-        resp_frame.pack(fill="both", expand=True, padx=5, pady=(2, 3))
-        resp_scroll = ttk.Scrollbar(resp_frame, orient="vertical")
-        self.ai_response = tk.Text(resp_frame, height=10, wrap="word", state="disabled",
-                                   bg="#222233", fg="#dddddd", font=("Helvetica", 10),
-                                   relief="solid", bd=1,
-                                   yscrollcommand=resp_scroll.set)
-        resp_scroll.configure(command=self.ai_response.yview)
-        self.ai_response.pack(side="left", fill="both", expand=True)
-        resp_scroll.pack(side="right", fill="y")
-        self.ai_response.tag_configure("user_label", foreground="#66ccff", font=("Helvetica", 10, "bold"))
-        self.ai_response.tag_configure("user_msg", foreground="#aaccdd")
-        self.ai_response.tag_configure("asst_label", foreground="#bb88ff", font=("Helvetica", 10, "bold"))
-        self.ai_response.tag_configure("system_notice", foreground="#888899", font=("Helvetica", 9, "italic"))
+        ttk.Button(controls, text="Snap Unitary",
+                   command=self._on_snap_unitary).pack(side="left", padx=2)
+        ttk.Button(controls, text="Use Custom",
+                   command=self._on_use_custom_matrix).pack(side="left", padx=2)
+        ttk.Button(controls, text="Randomize",
+                   command=self._on_randomize_matrix).pack(side="left", padx=2)
+        self.random_unitary_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls, text="Unitary",
+                        variable=self.random_unitary_var).pack(side="left", padx=2)
+        self.unitary_label = ttk.Label(controls, text="")
+        self.unitary_label.pack(side="left", padx=5)
 
-        # Buttons
-        btn_frame = ttk.Frame(parent)
-        btn_frame.pack(fill="x", padx=5, pady=(0, 3))
-        self.ai_ask_btn = ttk.Button(btn_frame, text="Ask Claude", command=self._on_ask_claude)
-        self.ai_ask_btn.pack(side="left", padx=(0, 4))
-        ttk.Button(btn_frame, text="Undo", command=self._on_ai_undo).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="New Session", command=self._on_ai_new_session).pack(side="left", padx=2)
-        self.ai_stop_btn = ttk.Button(btn_frame, text="Stop Tuning",
-                                       command=self._on_stop_tuning, state="disabled")
-        self.ai_stop_btn.pack(side="left", padx=2)
-        ttk.Label(btn_frame, text="Enter to send", foreground="#666688",
-                  font=("Helvetica", 9)).pack(side="left", padx=8)
-        self.ai_status_var = tk.StringVar(value="")
-        ttk.Label(btn_frame, textvariable=self.ai_status_var).pack(side="left", padx=4)
+        self.heatmap_size = 200
+        self.heatmap_cell = self.heatmap_size // 8
+        self.heatmap_canvas = tk.Canvas(parent, width=self.heatmap_size + 40,
+                                         height=self.heatmap_size + 40,
+                                         bg="gray20", highlightthickness=0)
+        self.heatmap_canvas.grid(row=row, column=0, columnspan=4, pady=3)
+        self.heatmap_canvas.bind("<Button-1>", self._on_heatmap_click)
+        self.heatmap_canvas.bind("<B1-Motion>", self._on_heatmap_drag)
+        self.heatmap_canvas.bind("<Button-3>", self._on_heatmap_right_click)
+        row += 1
 
-        # Input area (bottom, 4 lines)
-        input_frame = ttk.Frame(parent)
-        input_frame.pack(fill="x", padx=5, pady=(0, 5))
-        input_scroll = ttk.Scrollbar(input_frame, orient="vertical")
-        self.ai_input = tk.Text(input_frame, height=4, wrap="word",
-                                bg="#2a2a3e", fg="#eeeeee", insertbackground="#eeeeee",
-                                font=("Helvetica", 11), relief="solid", bd=1,
-                                yscrollcommand=input_scroll.set)
-        input_scroll.configure(command=self.ai_input.yview)
-        self.ai_input.pack(side="left", fill="both", expand=True)
-        input_scroll.pack(side="right", fill="y")
-        self.ai_input.bind("<Return>", self._on_ai_return)
-        self.ai_input.bind("<Shift-Return>", self._on_ai_shift_return)
+        edit_frame = ttk.Frame(parent)
+        edit_frame.grid(row=row, column=0, columnspan=4, sticky="w")
+        row += 1
+        ttk.Label(edit_frame, text="Cell:").pack(side="left")
+        self.cell_label = ttk.Label(edit_frame, text="(-, -)", width=6)
+        self.cell_label.pack(side="left", padx=2)
+        ttk.Label(edit_frame, text="Val:").pack(side="left", padx=(5, 0))
+        self.cell_value_var = tk.StringVar(value="0.00")
+        cell_entry = ttk.Entry(edit_frame, textvariable=self.cell_value_var, width=8)
+        cell_entry.pack(side="left", padx=2)
+        cell_entry.bind("<Return>", self._on_cell_value_enter)
+        self.selected_cell = None
 
-    def _on_ai_return(self, event):
-        """Send on Return and prevent newline insertion."""
-        self._on_ask_claude()
-        return "break"
+        self._load_matrix_from_topology()
+        self._draw_heatmap()
+        return row
 
-    def _on_ai_shift_return(self, event):
-        """Insert newline on Shift+Return."""
-        self.ai_input.insert("insert", "\n")
-        return "break"
+    # ------------------------------------------------------------------
+    # XY Pad
+    # ------------------------------------------------------------------
 
-    def _on_ai_layout_configure(self, event):
-        """Switch between horizontal and vertical AI layout based on width."""
-        width = event.width
-        if width > 1200 and self._ai_layout_mode != "horizontal":
-            self._apply_ai_layout("horizontal")
-        elif width <= 1200 and self._ai_layout_mode != "vertical":
-            self._apply_ai_layout("vertical")
+    _xy_ranges = {
+        "feedback_gain": (0.0, 2.0), "wet_dry": (0.0, 1.0),
+        "diffusion": (0.0, 0.7), "pre_delay_ms": (0.0, 250.0),
+        "saturation": (0.0, 1.0), "stereo_width": (0.0, 1.0),
+        "mod_master_rate": (0.0, 100.0), "mod_depth_delay_global": (0.0, 100.0),
+    }
 
-    def _apply_ai_layout(self, mode):
-        """Apply the given layout mode for params + AI chat."""
-        self._ai_layout_mode = mode
-        self._params_scroll_frame.grid_forget()
-        self._ai_chat_frame.grid_forget()
-        if mode == "horizontal":
-            self._params_ai_container.columnconfigure(0, weight=4, minsize=400)
-            self._params_ai_container.columnconfigure(1, weight=1, minsize=280)
-            self._params_ai_container.rowconfigure(0, weight=1)
-            self._params_ai_container.rowconfigure(1, weight=0)
-            self._params_scroll_frame.grid(row=0, column=0, sticky="nsew")
-            self._ai_chat_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+    def _build_xy_pad(self, parent, row):
+        xy_controls = ttk.Frame(parent)
+        xy_controls.grid(row=row, column=0, columnspan=4, sticky="w")
+        row += 1
+
+        xy_params = list(self._xy_ranges.keys())
+        ttk.Label(xy_controls, text="X:").pack(side="left")
+        self.xy_x_var = tk.StringVar(value="feedback_gain")
+        ttk.Combobox(xy_controls, textvariable=self.xy_x_var, values=xy_params,
+                     state="readonly", width=15).pack(side="left", padx=(2, 10))
+        ttk.Label(xy_controls, text="Y:").pack(side="left")
+        self.xy_y_var = tk.StringVar(value="diffusion")
+        ttk.Combobox(xy_controls, textvariable=self.xy_y_var, values=xy_params,
+                     state="readonly", width=15).pack(side="left", padx=2)
+
+        self.xy_size = 200
+        self.xy_canvas = tk.Canvas(parent, width=self.xy_size, height=self.xy_size,
+                                   bg="black", highlightthickness=1,
+                                   highlightbackground="gray")
+        self.xy_canvas.grid(row=row, column=0, columnspan=4, pady=3)
+        self.xy_canvas.bind("<B1-Motion>", self._on_xy_drag)
+        self.xy_canvas.bind("<Button-1>", self._on_xy_drag)
+        self._xy_draw_crosshair(self.xy_size // 2, self.xy_size // 2)
+        return row + 1
+
+    def _xy_draw_crosshair(self, x, y):
+        self.xy_canvas.delete("crosshair")
+        s = self.xy_size
+        self.xy_canvas.create_line(x, 0, x, s, fill="gray30", tags="crosshair")
+        self.xy_canvas.create_line(0, y, s, y, fill="gray30", tags="crosshair")
+        self.xy_canvas.create_oval(x - 6, y - 6, x + 6, y + 6,
+                                   outline="cyan", width=2, tags="crosshair")
+
+    def _xy_sync(self):
+        """Update crosshair position from current slider values."""
+        s = self.xy_size
+
+        def _norm(key):
+            if key in self.sliders and key in self._xy_ranges:
+                lo, hi = self._xy_ranges[key]
+                return (self.sliders[key].get() - lo) / (hi - lo)
+            return 0.5
+
+        px = int(max(0, min(s, _norm(self.xy_x_var.get()) * s)))
+        py = int(max(0, min(s, (1.0 - _norm(self.xy_y_var.get())) * s)))
+        self._xy_draw_crosshair(px, py)
+
+    def _on_xy_drag(self, event):
+        s = self.xy_size
+        nx = max(0.0, min(1.0, event.x / s))
+        ny = max(0.0, min(1.0, 1.0 - event.y / s))
+        for key, val in [(self.xy_x_var.get(), nx), (self.xy_y_var.get(), ny)]:
+            if key in self.sliders and key in self._xy_ranges:
+                lo, hi = self._xy_ranges[key]
+                self.sliders[key].set(lo + val * (hi - lo))
+        self._xy_draw_crosshair(event.x, event.y)
+
+    # ------------------------------------------------------------------
+    # Param read/write
+    # ------------------------------------------------------------------
+
+    def _read_params_from_ui(self):
+        p = dict(self.params)
+        p["feedback_gain"] = self.sliders["feedback_gain"].get()
+        p["wet_dry"] = self.sliders["wet_dry"].get()
+        p["diffusion"] = self.sliders["diffusion"].get()
+        p["saturation"] = self.sliders["saturation"].get()
+        p["pre_delay"] = int(self.sliders["pre_delay_ms"].get() / 1000 * SR)
+        p["matrix_type"] = self.matrix_var.get()
+        p["delay_times"] = [max(1, int(s.get() / 1000 * SR)) for s in self.delay_sliders]
+        p["damping_coeffs"] = [s.get() for s in self.damping_sliders]
+        p["input_gains"] = [s.get() for s in self.input_gain_sliders]
+        p["output_gains"] = [s.get() for s in self.output_gain_sliders]
+        p["stereo_width"] = self.sliders["stereo_width"].get()
+        p["node_pans"] = [s.get() for s in self.node_pan_sliders]
+        # Modulation
+        wf_map = {"sine": 0, "triangle": 1, "sample_hold": 2}
+        p["mod_master_rate"] = self.sliders["mod_master_rate"].get()
+        p["mod_waveform"] = wf_map.get(self.mod_waveform_var.get(), 0)
+        p["mod_correlation"] = self.sliders["mod_correlation"].get()
+        p["mod_depth_delay"] = [self.sliders["mod_depth_delay_global"].get()] * 8
+        p["mod_depth_damping"] = [self.sliders["mod_depth_damping_global"].get()] * 8
+        p["mod_depth_output"] = [self.sliders["mod_depth_output_global"].get()] * 8
+        p["mod_depth_matrix"] = self.sliders["mod_depth_matrix"].get()
+        p["mod_node_rate_mult"] = [s.get() for s in self.mod_rate_mult_sliders]
+        if p["matrix_type"] == "custom" and self.custom_matrix is not None:
+            p["matrix_custom"] = self.custom_matrix.tolist()
+        return p
+
+    def _write_params_to_ui(self, p):
+        self.params = p
+        self.sliders["feedback_gain"].set(p["feedback_gain"])
+        self.sliders["wet_dry"].set(p["wet_dry"])
+        self.sliders["diffusion"].set(p["diffusion"])
+        self.sliders["saturation"].set(p.get("saturation", 0.0))
+        self.sliders["pre_delay_ms"].set(p["pre_delay"] / SR * 1000)
+        self.matrix_var.set(p.get("matrix_type", "householder"))
+        self.sliders["stereo_width"].set(p.get("stereo_width", 1.0))
+        node_pans = p.get("node_pans",
+            [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0])
+        for i in range(8):
+            self.delay_sliders[i].set(p["delay_times"][i] / SR * 1000)
+            self.damping_sliders[i].set(p["damping_coeffs"][i])
+            self.input_gain_sliders[i].set(p["input_gains"][i])
+            self.output_gain_sliders[i].set(p["output_gains"][i])
+            self.node_pan_sliders[i].set(node_pans[i])
+        # Modulation
+        self.sliders["mod_master_rate"].set(p.get("mod_master_rate", 0.0))
+        dd = p.get("mod_depth_delay", [0.0] * 8)
+        self.sliders["mod_depth_delay_global"].set(dd[0] if isinstance(dd, list) else dd)
+        ddamp = p.get("mod_depth_damping", [0.0] * 8)
+        self.sliders["mod_depth_damping_global"].set(ddamp[0] if isinstance(ddamp, list) else ddamp)
+        dout = p.get("mod_depth_output", [0.0] * 8)
+        self.sliders["mod_depth_output_global"].set(dout[0] if isinstance(dout, list) else dout)
+        self.sliders["mod_depth_matrix"].set(p.get("mod_depth_matrix", 0.0))
+        self.sliders["mod_correlation"].set(p.get("mod_correlation", 1.0))
+        wf_rmap = {0: "sine", 1: "triangle", 2: "sample_hold"}
+        self.mod_waveform_var.set(wf_rmap.get(p.get("mod_waveform", 0), "sine"))
+        mrm = p.get("mod_node_rate_mult", [1.0] * 8)
+        for i in range(8):
+            self.mod_rate_mult_sliders[i].set(mrm[i])
+        # Update heatmap
+        if "matrix_custom" in p and p.get("matrix_type") == "custom":
+            self.custom_matrix = np.array(p["matrix_custom"])
         else:
-            self._params_ai_container.columnconfigure(0, weight=1)
-            self._params_ai_container.columnconfigure(1, weight=0)
-            self._params_ai_container.rowconfigure(0, weight=1)
-            self._params_ai_container.rowconfigure(1, weight=0)
-            self._params_scroll_frame.grid(row=0, column=0, sticky="nsew")
-            self._ai_chat_frame.grid(row=1, column=0, sticky="ew")
-            self.ai_response.configure(height=10)
+            self._load_matrix_from_topology()
+        self._draw_heatmap()
 
-    def _on_ask_claude(self):
-        prompt = self.ai_input.get("1.0", "end-1c").strip()
-        if not prompt:
-            return
-        self.ai_status_var.set("Thinking...")
-        self.ai_ask_btn.configure(state="disabled")
-        self.ai_stop_btn.configure(state="normal")
-        # Show user message in response box
-        self.ai_response.configure(state="normal")
-        self.ai_response.insert("end", "\nYou: ", "user_label")
-        self.ai_response.insert("end", f"{prompt}\n\n", "user_msg")
-        self.ai_response.configure(state="disabled")
-        self.ai_input.delete("1.0", "end")
-        self._ai_needs_label = True
-        current = self._read_params_from_ui()
-        self.llm.send_prompt(
-            prompt, current,
-            on_text=self._on_claude_text,
-            on_params=self._on_claude_params,
-            on_done=self._on_claude_done,
-            on_error=self._on_claude_error,
-            on_iterate=self._on_claude_iterate,
-            metrics=self.rendered_metrics,
-            source_metrics=getattr(self, 'source_metrics', None),
-            spectrogram_png=getattr(self, 'rendered_spectrogram', None),
-            source_spectrogram_png=getattr(self, 'source_spectrogram', None),
-        )
+    # ------------------------------------------------------------------
+    # Randomize (custom: handles per-node arrays + matrix)
+    # ------------------------------------------------------------------
 
-    def _on_claude_text(self, text):
-        self.ai_response.configure(state="normal")
-        if self._ai_needs_label:
-            self.ai_response.insert("end", "Claude: ", "asst_label")
-            self._ai_needs_label = False
-        self.ai_response.insert("end", text)
-        self.ai_response.see("end")
-        self.ai_response.configure(state="disabled")
-        self.ai_status_var.set("")
+    def _randomize_knobs(self):
+        """Randomize all unlocked parameters without playing."""
+        rng = np.random.default_rng()
+        for key, lo, hi in [("feedback_gain", 0.0, 2.0), ("wet_dry", 0.0, 1.0),
+                             ("diffusion", 0.0, 0.7), ("saturation", 0.0, 1.0),
+                             ("pre_delay_ms", 0.0, 250.0), ("stereo_width", 0.0, 1.0)]:
+            if not self._is_locked(key):
+                self.sliders[key].set(rng.uniform(lo, hi))
+        node_groups = [
+            (self.delay_sliders, "delay", 0.5, 300.0),
+            (self.damping_sliders, "damp", 0.0, 0.99),
+            (self.input_gain_sliders, "ig", 0.0, 0.5),
+            (self.output_gain_sliders, "og", 0.0, 2.0),
+            (self.node_pan_sliders, "pan", -1.0, 1.0),
+        ]
+        for var_list, prefix, lo, hi in node_groups:
+            for i in range(8):
+                if not self._is_locked(f"{prefix}_{i}"):
+                    var_list[i].set(rng.uniform(lo, hi))
+        for key, lo, hi in [("mod_master_rate", 0.0, 20.0),
+                             ("mod_depth_delay_global", 0.0, 30.0),
+                             ("mod_depth_damping_global", 0.0, 0.3),
+                             ("mod_depth_output_global", 0.0, 0.5),
+                             ("mod_depth_matrix", 0.0, 0.5),
+                             ("mod_correlation", 0.0, 1.0)]:
+            if not self._is_locked(key):
+                self.sliders[key].set(rng.uniform(lo, hi))
+        if not self._is_locked("mod_waveform"):
+            self.mod_waveform_var.set(rng.choice(["sine", "triangle", "sample_hold"]))
+        for i in range(8):
+            if not self._is_locked(f"mrm_{i}"):
+                self.mod_rate_mult_sliders[i].set(rng.choice([0.5, 1.0, 1.0, 2.0, 3.0]))
+        # Matrix — respect section lock
+        matrix_locked = ("Feedback Matrix" in self.section_locks
+                         and self.section_locks["Feedback Matrix"].get())
+        if not matrix_locked:
+            mat = rng.standard_normal((8, 8))
+            if rng.random() < 0.5:
+                mat = nearest_unitary(mat)
+            self.custom_matrix = mat
+            self.matrix_var.set("custom")
+            self._draw_heatmap()
+        self.status_var.set("Randomized all")
 
-    def _on_claude_params(self, merged_params):
-        self._write_params_to_ui(merged_params)
-        self._pending_gen_notice = True
-        self.ai_status_var.set("Applied params")
+    def _randomize_params(self):
+        """Override base: randomize + play."""
+        self._randomize_knobs()
         self._on_play()
 
-    def _on_claude_done(self):
-        self.ai_response.configure(state="normal")
-        self.ai_response.insert("end", "\n")
-        self.ai_response.configure(state="disabled")
-        self.ai_ask_btn.configure(state="normal")
-        self.ai_stop_btn.configure(state="disabled")
-
-    def _on_claude_error(self, error_msg):
-        self.ai_status_var.set(f"Error: {error_msg[:80]}")
-        self.ai_ask_btn.configure(state="normal")
-        self.ai_stop_btn.configure(state="disabled")
-
-    def _on_claude_iterate(self, merged_params):
-        """Claude requested iteration — render and play."""
-        self._write_params_to_ui(merged_params)
-        self._pending_gen_notice = True
-        self.ai_status_var.set(f"Tuning... iteration {self.llm._iterate_count}/{self.llm.MAX_ITERATE}")
-
-        def on_render_done():
-            self.llm.continue_iteration(
-                current_params=self._read_params_from_ui(),
-                metrics=self.rendered_metrics,
-                spectrogram_png=getattr(self, 'rendered_spectrogram', None),
-            )
-
-        self._render_iter(merged_params, on_render_done)
-
-    def _render_iter(self, params, on_complete):
-        """Render and play for AI iteration, then call on_complete()."""
-        sd.stop()
-        self._stop_cursor()
-        self._render_and_play(params, on_complete=on_complete,
-                              status_prefix="Tuning... iteration")
-
-    def _on_stop_tuning(self):
-        self.llm.stop_iterating()
-        self.ai_status_var.set("Stopping after current render...")
-
-    def _on_ai_undo(self):
-        prev = self.llm.undo()
-        if prev:
-            self._write_params_to_ui(prev)
-            self.ai_status_var.set("Reverted")
-            self._on_play()
-
-    def _on_ai_new_session(self):
-        self.llm.reset_session()
-        self.ai_response.configure(state="normal")
-        self.ai_response.delete("1.0", "end")
-        self.ai_response.configure(state="disabled")
-        self.ai_status_var.set("New session")
-
-    def _build_presets_page(self, parent):
-        # Search box
-        search_frame = ttk.Frame(parent)
-        search_frame.pack(fill="x", pady=(5, 0))
-        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 4))
-        self._preset_search_var = tk.StringVar()
-        self._preset_search_var.trace_add("write", lambda *_: self._refresh_preset_list())
-        ttk.Entry(search_frame, textvariable=self._preset_search_var).pack(side="left", fill="x", expand=True)
-
-        # Treeview grouped by category
-        tree_frame = ttk.Frame(parent)
-        tree_frame.pack(fill="both", expand=True, pady=5)
-
-        self.preset_tree = ttk.Treeview(tree_frame, columns=("desc", "name"),
-                                         show="tree headings",
-                                         selectmode="browse", height=20)
-        self.preset_tree.heading("#0", text="Preset", anchor="w")
-        self.preset_tree.heading("desc", text="Description", anchor="w")
-        self.preset_tree.column("#0", width=220, minwidth=120)
-        self.preset_tree.column("desc", width=400, minwidth=200)
-        self.preset_tree.column("name", width=0, stretch=False)  # hidden data column
-        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical",
-                                     command=self.preset_tree.yview)
-        self.preset_tree.configure(yscrollcommand=tree_scroll.set)
-        self.preset_tree.pack(side="left", fill="both", expand=True)
-        tree_scroll.pack(side="right", fill="y")
-        self.preset_tree.bind("<Double-1>", lambda e: self._on_load_preset(play=True))
-        self.preset_tree.bind("<Return>", lambda e: self._on_load_preset(play=True))
-
-        self._preset_meta = {}  # name -> {category, description}
-        self._refresh_preset_list()
-
-        btn_frame = ttk.Frame(parent)
-        btn_frame.pack(fill="x", pady=5)
-        ttk.Button(btn_frame, text="Load", command=self._on_load_preset).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="Save As...", command=self._on_save_preset).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="Delete", command=self._on_delete_preset).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="Refresh", command=self._refresh_preset_list).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="★ Favorite", command=self._on_toggle_favorite).pack(side="left", padx=2)
-
-    def _build_description_page(self, parent):
-        self.diagram_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
-        self.diagram_canvas.pack(fill="both", expand=True)
-        self.diagram_canvas.bind("<Configure>", lambda e: self._draw_diagram())
-
-    def _build_guide_page(self, parent):
-        text = tk.Text(parent, wrap="word", bg="#1a1a2e", fg="#cccccc",
-                       font=("Helvetica", 11), padx=20, pady=15,
-                       relief="flat", cursor="arrow", spacing1=2, spacing3=4)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
-        text.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        text.pack(fill="both", expand=True)
-
-        # Tag styles
-        text.tag_configure("h1", font=("Helvetica", 16, "bold"), foreground="#e0e0e0",
-                           spacing1=14, spacing3=6)
-        text.tag_configure("h2", font=("Helvetica", 13, "bold"), foreground="#88aacc",
-                           spacing1=12, spacing3=4)
-        text.tag_configure("h3", font=("Helvetica", 11, "bold"), foreground="#99bbdd",
-                           spacing1=8, spacing3=2)
-        text.tag_configure("param", font=("Helvetica", 11, "bold"), foreground="#ddd8a0")
-        text.tag_configure("body", font=("Helvetica", 11), foreground="#cccccc")
-        text.tag_configure("range", font=("Helvetica", 10), foreground="#888888")
-        text.tag_configure("tip", font=("Helvetica", 10, "italic"), foreground="#7a9a7a")
-        text.tag_configure("warn", font=("Helvetica", 10, "bold"), foreground="#dd6666")
-        text.tag_configure("sep", font=("Helvetica", 4), foreground="#333355")
-
-        def h1(s):
-            text.insert("end", s + "\n", "h1")
-
-        def h2(s):
-            text.insert("end", "\n", "sep")
-            text.insert("end", s + "\n", "h2")
-
-        def h3(s):
-            text.insert("end", s + "\n", "h3")
-
-        def param(name, rng, desc):
-            text.insert("end", f"  {name}", "param")
-            text.insert("end", f"  ({rng})\n", "range")
-            text.insert("end", f"    {desc}\n\n", "body")
-
-        def tip(s):
-            text.insert("end", f"    {s}\n", "tip")
-
-        def warn(s):
-            text.insert("end", f"    {s}\n", "warn")
-
-        def body(s):
-            text.insert("end", s + "\n\n", "body")
-
-        # ===== CONTENT =====
-
-        h1("FDN Reverb — Guide")
-        body("This is an 8-node Feedback Delay Network reverb built from scratch. "
-             "Audio enters the network, passes through 8 parallel delay lines with "
-             "damping filters, and is fed back through a mixing matrix. The result "
-             "is a dense, natural-sounding reverb tail.")
-
-        # --- Top Bar ---
-        h2("Top Bar Controls")
-        param("Load WAV", "button", "Load a source audio file (.wav) to process.")
-        param("Play Dry", "button", "Play the original unprocessed audio.")
-        param("Play", "button",
-              "Render the reverb with current settings and play. If settings "
-              "haven't changed since the last render, replays the cached result.")
-        param("Stop", "button", "Stop audio playback.")
-        param("Save WAV", "button",
-              "Export the last rendered output as a 16-bit WAV file.")
-        param("Save Preset", "button",
-              "Save all current parameter values as a named JSON preset.")
-        param("Randomize & Play", "button",
-              "Randomize every parameter (including the matrix) and immediately "
-              "render and play. Great for discovering unexpected sounds.")
-
-        # --- Global ---
-        h2("Global Parameters")
-
-        param("Feedback Gain", "0.0 \u2013 2.0",
-              "Controls how much energy recirculates through the delay network. "
-              "This is the single biggest factor in reverb length.")
-        tip("0.0 = no reverb (single echo).  0.5 = short decay.  "
-            "0.85 = medium room.  0.95+ = long tail.")
-        warn("Values above 1.0 cause the signal to grow each loop \u2014 "
-             "this WILL explode unless Saturation is turned up to tame it.")
-        text.insert("end", "\n", "body")
-
-        param("Wet/Dry Mix", "0.0 \u2013 1.0",
-              "Blend between the original (dry) signal and the reverb (wet) signal.")
-        tip("0.0 = dry only.  0.5 = equal blend.  1.0 = 100% reverb.")
-        text.insert("end", "\n", "body")
-
-        param("Diffusion", "0.0 \u2013 0.7",
-              "Smears the input through a chain of allpass filters before it "
-              "enters the FDN. Softens transients and thickens the early "
-              "reflections. Uses 4 allpass stages internally.")
-        tip("0.0 = bypass (sharp attacks).  0.3 = subtle softening.  "
-            "0.5+ = heavy smearing.")
-        text.insert("end", "\n", "body")
-
-        param("Saturation", "0.0 \u2013 1.0",
-              "Applies tanh soft-clipping inside the feedback loop. At low values "
-              "it adds subtle warmth. At high values it creates distortion, drones, "
-              "and metallic textures. Critically, it prevents explosion when "
-              "Feedback Gain > 1.0.")
-        tip("0.0 = clean/linear (classic FDN).  0.3 = warm.  "
-            "0.7+ = aggressive distortion.")
-        text.insert("end", "\n", "body")
-
-        param("Pre-delay", "0 \u2013 250 ms",
-              "Silence inserted before the reverb tail begins. Simulates the "
-              "time gap between the direct sound and the first reflections "
-              "in a large space.")
-        tip("0\u201310 ms = intimate/close.  20\u201350 ms = medium room.  "
-            "80+ ms = large hall or cathedral.")
-        text.insert("end", "\n", "body")
-
-        param("Tail Length", "0 \u2013 60 s",
-              "How many seconds of silence to append after the input, giving "
-              "the reverb tail time to decay. This only affects offline "
-              "rendering length, not the reverb character itself.")
-        text.insert("end", "\n", "body")
-
-        # --- Matrix ---
-        h2("Feedback Matrix")
-        body("The feedback matrix determines how energy flows between the 8 delay "
-             "lines after each loop. It is the \"shape\" of the reverb's internal "
-             "mixing. Unitary matrices preserve energy (no growth or loss from the "
-             "matrix itself), which is important for stable, natural decay.")
-
-        h3("Matrix Topologies")
-        param("Householder", "unitary",
-              "The standard FDN choice (Jot 1991). Every node feeds equally into "
-              "every other node. Produces smooth, uniform decay. The default.")
-        param("Hadamard", "unitary",
-              "Structured +/\u2212 coupling. Some node pairs add, others subtract. "
-              "Can sound slightly different in high-frequency decay.")
-        param("Diagonal (Identity)", "unitary",
-              "No coupling \u2014 each delay line is independent. Sounds metallic "
-              "and comb-filter-like. Useful for special effects.")
-        param("Random Orthogonal", "unitary",
-              "A random unitary matrix (seeded for reproducibility). Non-uniform "
-              "coupling \u2014 some paths are stronger than others.")
-        param("Circulant", "unitary",
-              "Ring topology: node 0 \u2192 1 \u2192 2 \u2192 ... \u2192 7 \u2192 0. "
-              "Energy travels in a circle. Sparse coupling.")
-        param("Stautner-Puckette", "unitary",
-              "Classic paired cross-coupling (1982). Creates 4 pairs of nodes, "
-              "each rotated by 45\u00b0. Historically used in early digital reverbs.")
-        param("Zero", "NOT unitary",
-              "No feedback at all. Each delay line produces one echo then silence. "
-              "Useful for testing or building comb-filter effects.")
-        param("Custom", "user-editable",
-              "Use the heatmap editor to set arbitrary matrix values. "
-              "Click cells to select, drag to adjust, right-click to zero.")
-
-        h3("Heatmap Controls")
-        param("Click", "heatmap", "Select a cell. Its row/col and value appear below.")
-        param("Drag", "heatmap", "Drag up/down on a selected cell to adjust its value.")
-        param("Right-click", "heatmap", "Zero out a cell.")
-        param("Cell value entry", "text field",
-              "Type an exact value and press Enter to set the selected cell.")
-        param("Snap Unitary", "button",
-              "Project the current matrix to the nearest unitary matrix via SVD. "
-              "Useful after manual edits to restore energy preservation.")
-        param("Use Custom", "button",
-              "Switch to custom matrix mode so the heatmap values are used for rendering.")
-        param("Randomize", "button",
-              "Generate a random 8\u00d78 matrix. If the Unitary checkbox is on, "
-              "projects it to the nearest unitary matrix.")
-
-        # --- XY Pad ---
-        h2("XY Pad")
-        body("A 2D controller that maps mouse position to any two global parameters. "
-             "Select which parameter the X and Y axes control using the dropdowns. "
-             "Click or drag on the pad to adjust both parameters simultaneously. "
-             "The crosshair syncs with the sliders in both directions.")
-
-        # --- Modulation ---
-        h2("Modulation (Time-Varying FDN)")
-        body("Modulation adds life and movement to the reverb by continuously varying "
-             "delay times, damping, output gains, and the feedback matrix over time. "
-             "An internal LFO (low-frequency oscillator) drives these changes. The result "
-             "ranges from subtle chorus and spatial drift to alien FM-like textures.")
-
-        h3("Three Timescales")
-        body("Slow (0.01\u20130.5 Hz): The reverb character drifts over several seconds \u2014 "
-             "spatial size, brightness, and density evolve gradually. "
-             "Medium/LFO (0.5\u201320 Hz): Classic chorus and vibrato effects \u2014 "
-             "eliminates metallic ringing from static delay lines. "
-             "Fast/Audio-rate (20+ Hz): Creates FM-like inharmonic sidebands \u2014 "
-             "alien, bell-like, or granular textures.")
-
-        param("Master Rate", "0 \u2013 100 Hz",
-              "The fundamental modulation speed. All per-node LFOs derive their "
-              "rate from this value multiplied by their rate multiplier. "
-              "Set to 0 for static (classic FDN) behavior.")
-        tip("0 = off.  0.1 = slow evolve.  2 = chorus.  80+ = FM territory.")
-        text.insert("end", "\n", "body")
-
-        param("Delay Depth", "0 \u2013 100 samples",
-              "How far the delay times swing around their base values. "
-              "Small values (3\u20135 smp) create subtle chorus. "
-              "Large values (20+ smp) create audible pitch wobble.")
-        text.insert("end", "\n", "body")
-
-        param("Damp Depth", "0.0 \u2013 0.5",
-              "How much the damping coefficients swing. Creates "
-              "time-varying brightness \u2014 the reverb breathes between "
-              "bright and dark.")
-        text.insert("end", "\n", "body")
-
-        param("Out Gain Depth", "0.0 \u2013 1.0",
-              "Modulates output gains per node. Creates tremolo-like "
-              "amplitude variations in the reverb tail.")
-        text.insert("end", "\n", "body")
-
-        param("Matrix Depth", "0.0 \u2013 1.0",
-              "Blends between the primary feedback matrix and a secondary "
-              "matrix (random orthogonal). The energy routing between "
-              "nodes changes over time \u2014 the reverb's internal structure breathes.")
-        text.insert("end", "\n", "body")
-
-        param("Correlation", "0.0 \u2013 1.0",
-              "Controls phase relationships between the 8 per-node LFOs. "
-              "1.0 = all nodes modulate in sync (uniform). "
-              "0.0 = phases spread evenly (maximum decorrelation).")
-        tip("Low correlation creates wider stereo movement and more complex textures.")
-        text.insert("end", "\n", "body")
-
-        param("Mod Waveform", "sine / triangle / sample_hold",
-              "The LFO shape. Sine is smooth and natural. Triangle is "
-              "slightly brighter. Sample-and-hold creates stepped, "
-              "random-sounding modulation.")
-        text.insert("end", "\n", "body")
-
-        param("Rate Multipliers", "0.25 \u2013 4.0 per node",
-              "Each node's LFO rate = master rate \u00d7 its multiplier. "
-              "Use integer ratios (1, 2, 3) for rhythmic relationships "
-              "or non-integer values for more chaotic modulation.")
-        text.insert("end", "\n", "body")
-
-        # --- Per-Node ---
-        h2("Per-Node Parameters (8 nodes)")
-        body("Each of the 8 delay lines in the FDN has its own settings. Using "
-             "different values per node (rather than identical values) produces "
-             "denser, more natural reverb because the echo patterns don't "
-             "repeat at a single interval.")
-
-        param("Delay Times", "0.5 \u2013 300 ms",
-              "The delay length for each of the 8 delay lines. These are the "
-              "\"room dimensions\" of the reverb. Short times (< 15 ms) create "
-              "small resonant spaces; long times (50+ ms) create large halls. "
-              "Prime-number-like ratios between the delay times produce the "
-              "densest, least metallic reverb.")
-        tip("Defaults are prime-ish values from 29\u201373 ms (medium room).")
-        text.insert("end", "\n", "body")
-
-        param("Damping", "0.0 \u2013 0.99",
-              "One-pole lowpass filter coefficient per delay line. Higher values "
-              "remove more high frequencies each time the signal passes through "
-              "the loop, simulating absorption by soft surfaces (carpet, curtains).")
-        tip("0.0 = no filtering (bright).  0.3 = warm.  "
-            "0.7+ = dark/muffled.")
-        text.insert("end", "\n", "body")
-
-        param("Input Gains", "0.0 \u2013 0.5",
-              "How much of the input signal is fed into each delay line. "
-              "Equal gains (default 1/8 = 0.125) distribute the input evenly. "
-              "Unequal gains emphasize certain delay lines over others.")
-        text.insert("end", "\n", "body")
-
-        param("Output Gains", "0.0 \u2013 2.0",
-              "How much each delay line contributes to the final output mix. "
-              "Zeroing a node's output silences it in the output but it still "
-              "participates in feedback. Values > 1.0 amplify that node.")
-        text.insert("end", "\n", "body")
-
-        # --- Presets ---
-        h2("Presets Tab")
-        body("Save and load parameter snapshots as JSON files. Presets are stored "
-             "in gui/presets/. Select a preset from the list and click Load to "
-             "restore those settings. Use Save As... to create a new preset from "
-             "the current knob positions.")
-
-        # --- Signal Flow ---
-        h2("Signal Flow Tab")
-        body("A live diagram showing the current signal chain from input to "
-             "output. Updates automatically to reflect parameter values. Shows "
-             "warnings (e.g. feedback > 1.0 with no saturation) and plain-English "
-             "descriptions of the current sound character.")
-
-        # --- Tips ---
-        h2("Tips & Recipes")
-        h3("Natural Room Reverb")
-        body("Feedback 0.7\u20130.9, damping 0.2\u20130.4, diffusion 0.4\u20130.5, "
-             "Householder matrix, delay times 20\u201380 ms with prime-ish ratios.")
-        h3("Infinite Drone / Shimmer")
-        body("Feedback 1.0\u20131.5, saturation 0.3\u20130.6 (to prevent explosion), "
-             "low damping. The signal sustains indefinitely and distorts gently.")
-        h3("Metallic / Comb Filter")
-        body("Diagonal matrix (no coupling), short delay times (1\u20135 ms), "
-             "high feedback. Each delay line resonates independently.")
-        h3("Gated Reverb")
-        body("Short tail length, high feedback for initial density, "
-             "wet/dry around 0.7. The reverb cuts off abruptly.")
-        h3("Dark Ambient Wash")
-        body("High damping (0.7+), long delay times, feedback 0.9+, "
-             "high diffusion. High frequencies die quickly, leaving a warm pad.")
-
-        text.configure(state="disabled")
-
-    def _build_waveforms_page(self, parent):
-        """Combined input + output waveforms, stacked vertically."""
-        ttk.Label(parent, text="Input", font=("Helvetica", 9, "bold"),
-                  foreground="#888").pack(anchor="w")
-        self.input_waveform_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
-        self.input_waveform_canvas.pack(fill="both", expand=True, pady=(0, 3))
-        self.input_waveform_canvas.bind("<Configure>", lambda e: self._draw_input_waveform())
-        self.input_waveform_canvas.bind("<Button-1>", self._on_input_seek)
-
-        ttk.Label(parent, text="Output", font=("Helvetica", 9, "bold"),
-                  foreground="#888").pack(anchor="w")
-        self.waveform_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
-        self.waveform_canvas.pack(fill="both", expand=True)
-        self.waveform_canvas.bind("<Configure>", lambda e: self._draw_waveform())
-        self.waveform_canvas.bind("<Button-1>", self._on_output_seek)
-
-    def _build_spectrograms_page(self, parent):
-        """Side-by-side input + output spectrograms drawn from audio data."""
-        self._spec_images = {}  # keep PhotoImage references to prevent GC
-        row = ttk.Frame(parent)
-        row.pack(fill="both", expand=True)
-        row.columnconfigure(0, weight=1)
-        row.columnconfigure(1, weight=1)
-        row.rowconfigure(0, weight=1)
-
-        self.spec_input_canvas = tk.Canvas(row, bg="#111118", highlightthickness=0)
-        self.spec_input_canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
-        self.spec_output_canvas = tk.Canvas(row, bg="#111118", highlightthickness=0)
-        self.spec_output_canvas.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
-
-        self.spec_input_canvas.bind("<Configure>", lambda e: self._draw_spectrograms())
-        self.spec_output_canvas.bind("<Configure>", lambda e: self._draw_spectrograms())
-        self.spec_input_canvas.bind("<Button-1>", self._on_input_seek)
-        self.spec_output_canvas.bind("<Button-1>", self._on_output_seek)
-
-    def _draw_input_waveform(self):
-        draw_waveform(self.input_waveform_canvas, self.source_audio, SR,
-                      getattr(self, 'source_metrics', None), "Input")
-
-    def _draw_waveform(self):
-        draw_waveform(self.waveform_canvas, self.rendered_audio, SR,
-                      self.rendered_metrics, "Output", self.rendered_warning)
-
-    def _draw_spectrograms(self):
-        """Draw spectrograms computed from audio data."""
-        draw_spectrogram(self.spec_input_canvas, self.source_audio, SR,
-                         "Input", self._spec_images)
-        draw_spectrogram(self.spec_output_canvas, self.rendered_audio, SR,
-                         "Output", self._spec_images)
-
-    def _on_tab_changed(self, event=None):
-        idx = self._notebook.index("current")
-        if idx == 2:  # Signal Flow tab
+    # ------------------------------------------------------------------
+    # Matrix heatmap
+    # ------------------------------------------------------------------
+
+    def _load_matrix_from_topology(self):
+        name = self.matrix_var.get()
+        if name in MATRIX_TYPES:
+            self.custom_matrix = get_matrix(name, 8,
+                                            seed=self.params.get("matrix_seed", 42))
+        elif self.custom_matrix is None:
+            self.custom_matrix = get_matrix("householder", 8)
+
+    def _draw_heatmap(self):
+        if self.custom_matrix is None:
+            return
+        c = self.heatmap_canvas
+        c.delete("all")
+        cell = self.heatmap_cell
+        pad = 30
+        vmax = max(np.max(np.abs(self.custom_matrix)), 0.01)
+
+        for row in range(8):
+            for col in range(8):
+                val = self.custom_matrix[row, col]
+                intensity = min(abs(val) / vmax, 1.0)
+                if val >= 0:
+                    r, g, b = int(40 + 215 * intensity), int(40 + 80 * intensity), 40
+                else:
+                    r, g, b = 40, int(40 + 80 * intensity), int(40 + 215 * intensity)
+                color = f"#{r:02x}{g:02x}{b:02x}"
+                x0, y0 = pad + col * cell, pad + row * cell
+                c.create_rectangle(x0, y0, x0 + cell, y0 + cell,
+                                   fill=color, outline="gray40")
+                text_color = "white" if intensity > 0.3 else "gray70"
+                fmt = f"{val:.1f}" if cell < 30 else f"{val:.2f}"
+                c.create_text(x0 + cell // 2, y0 + cell // 2,
+                              text=fmt, fill=text_color, font=("TkDefaultFont", 7))
+
+        for i in range(8):
+            c.create_text(pad + i * cell + cell // 2, pad - 12,
+                          text=str(i), fill="gray70", font=("TkDefaultFont", 9))
+            c.create_text(pad - 12, pad + i * cell + cell // 2,
+                          text=str(i), fill="gray70", font=("TkDefaultFont", 9))
+        c.create_text(pad + 4 * cell, pad - 25, text="from delay line",
+                      fill="gray50", font=("TkDefaultFont", 8))
+        c.create_text(pad - 25, pad + 4 * cell, text="to",
+                      fill="gray50", font=("TkDefaultFont", 8), angle=90)
+
+        if self.selected_cell:
+            sr, sc = self.selected_cell
+            x0, y0 = pad + sc * cell, pad + sr * cell
+            c.create_rectangle(x0, y0, x0 + cell, y0 + cell, outline="cyan", width=2)
+
+        unitary = is_unitary(self.custom_matrix)
+        self.unitary_label.config(
+            text="Unitary: Yes" if unitary else "Unitary: No",
+            foreground="green" if unitary else "orange")
+
+    def _heatmap_cell_at(self, x, y):
+        pad, cell = 30, self.heatmap_cell
+        col, row = (x - pad) // cell, (y - pad) // cell
+        if 0 <= row < 8 and 0 <= col < 8:
+            return int(row), int(col)
+        return None
+
+    def _on_heatmap_click(self, event):
+        pos = self._heatmap_cell_at(event.x, event.y)
+        if pos is None:
+            return
+        row, col = pos
+        self.selected_cell = (row, col)
+        self.cell_label.config(text=f"({row}, {col})")
+        self.cell_value_var.set(f"{self.custom_matrix[row, col]:.3f}")
+        self._draw_heatmap()
+
+    def _on_heatmap_drag(self, event):
+        if self.selected_cell is None or self.custom_matrix is None:
+            return
+        row, col = self.selected_cell
+        pad, cell = 30, self.heatmap_cell
+        cell_center_y = pad + row * cell + cell // 2
+        delta = (cell_center_y - event.y) / (cell * 2)
+        new_val = max(-1.5, min(1.5, delta * 2))
+        self.custom_matrix[row, col] = new_val
+        self.cell_value_var.set(f"{new_val:.3f}")
+        self._draw_heatmap()
+
+    def _on_heatmap_right_click(self, event):
+        pos = self._heatmap_cell_at(event.x, event.y)
+        if pos is None or self.custom_matrix is None:
+            return
+        row, col = pos
+        self.custom_matrix[row, col] = 0.0
+        self.selected_cell = (row, col)
+        self.cell_label.config(text=f"({row}, {col})")
+        self.cell_value_var.set("0.000")
+        self._draw_heatmap()
+
+    def _on_cell_value_enter(self, event=None):
+        if self.selected_cell is None or self.custom_matrix is None:
+            return
+        try:
+            val = float(self.cell_value_var.get())
+        except ValueError:
+            return
+        row, col = self.selected_cell
+        self.custom_matrix[row, col] = val
+        self._draw_heatmap()
+
+    def _on_topology_changed(self, event=None):
+        name = self.matrix_var.get()
+        if name != "custom":
+            self._load_matrix_from_topology()
+            self._draw_heatmap()
+            self.status_var.set(f"Matrix: {name}")
+
+    def _on_snap_unitary(self):
+        if self.custom_matrix is None:
+            return
+        self.custom_matrix = nearest_unitary(self.custom_matrix)
+        self._draw_heatmap()
+        if self.selected_cell:
+            r, c = self.selected_cell
+            self.cell_value_var.set(f"{self.custom_matrix[r, c]:.3f}")
+        self.status_var.set("Snapped to nearest unitary matrix")
+
+    def _on_use_custom_matrix(self):
+        self.matrix_var.set("custom")
+        self.status_var.set("Using custom matrix \u2014 edit the heatmap, then Play")
+
+    def _on_randomize_matrix(self):
+        if ("Feedback Matrix" in self.section_locks
+                and self.section_locks["Feedback Matrix"].get()):
+            self.status_var.set("Matrix is locked")
+            return
+        rng = np.random.default_rng()
+        mat = rng.standard_normal((8, 8))
+        if self.random_unitary_var.get():
+            mat = nearest_unitary(mat)
+        self.custom_matrix = mat
+        self.matrix_var.set("custom")
+        self._draw_heatmap()
+        label = "unitary" if self.random_unitary_var.get() else "non-unitary"
+        self.status_var.set(f"Randomized matrix ({label})")
+
+    # ------------------------------------------------------------------
+    # Tab change & diagram scheduling
+    # ------------------------------------------------------------------
+
+    def _on_notebook_changed(self, event=None):
+        """Extend base to also refresh signal flow diagram."""
+        super()._on_notebook_changed(event)
+        current = self._notebook.select()
+        sf_frame = self._extra_tab_frames.get("Signal Flow")
+        if sf_frame and current == str(sf_frame):
             self._draw_diagram()
-        elif idx == 3:  # Waveforms tab
-            self._draw_input_waveform()
-            self._draw_waveform()
-        elif idx == 4:  # Spectrograms tab
-            self._draw_spectrograms()
-
-    def _schedule_autoplay(self):
-        if self._autoplay_id is not None:
-            self.root.after_cancel(self._autoplay_id)
-        self._autoplay_id = self.root.after(400, self._on_play)
-
-    def _check_autoplay(self):
-        """Re-render if params changed during a render."""
-        params = self._read_params_from_ui()
-        snap = self._params_snapshot(params)
-        if self.rendered_params != snap:
-            self._on_play()
 
     def _schedule_diagram_redraw(self, *args):
-        """Debounced diagram refresh — redraws 200ms after the last param change."""
         if self._diagram_redraw_id is not None:
             self.root.after_cancel(self._diagram_redraw_id)
         self._diagram_redraw_id = self.root.after(200, self._diagram_redraw_if_visible)
 
     def _diagram_redraw_if_visible(self):
-        """Redraw the signal flow diagram only if its tab is currently selected."""
         self._diagram_redraw_id = None
         try:
-            if self._notebook.index("current") == 2:
+            current = self._notebook.select()
+            sf_frame = self._extra_tab_frames.get("Signal Flow")
+            if sf_frame and current == str(sf_frame):
                 self._draw_diagram()
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # Signal flow diagram
+    # ------------------------------------------------------------------
+
+    def _build_signal_flow_page(self, parent):
+        self.diagram_canvas = tk.Canvas(parent, bg="#111118", highlightthickness=0)
+        self.diagram_canvas.pack(fill="both", expand=True)
+        self.diagram_canvas.bind("<Configure>", lambda e: self._draw_diagram())
+
     def _draw_diagram(self):
-        import math
         p = self._read_params_from_ui()
         c = self.diagram_canvas
         c.delete("all")
@@ -1105,7 +752,7 @@ class ReverbGUI:
         W = c.winfo_width() or 900
         H = c.winfo_height() or 700
 
-        # --- Colors & Fonts ---
+        # Colors & Fonts
         WIRE = "#555577"
         TITLE_COL = "#e0e0e0"
         LABEL_COL = "#88aacc"
@@ -1126,14 +773,13 @@ class ReverbGUI:
         F_NODE = ("Helvetica", 10, "bold")
         F_NODE_SM = ("Helvetica", 8)
 
-        # --- Layout ---
+        # Layout
         left_w = min(240, int(W * 0.28))
         ring_cx = left_w + (W - left_w) / 2
         ring_cy = H / 2
         ring_r = min((W - left_w) / 2 - 60, H / 2 - 60, 260)
         node_r = max(22, ring_r * 0.16)
 
-        # --- Helpers ---
         def info_row(y, label, val, desc="", warn=False):
             c.create_text(14, y, text=label, fill=LABEL_COL, font=F_LABEL, anchor="w")
             c.create_text(left_w - 10, y - (7 if desc else 0), text=val,
@@ -1143,8 +789,8 @@ class ReverbGUI:
                               fill=DESC_COL, font=F_DESC, anchor="e")
             return y + (32 if desc else 26)
 
-        def info_heading(y, text):
-            c.create_text(14, y, text=text, fill=TITLE_COL, font=F_TITLE, anchor="w")
+        def info_heading(y, text_str):
+            c.create_text(14, y, text=text_str, fill=TITLE_COL, font=F_TITLE, anchor="w")
             c.create_line(14, y + 12, left_w - 10, y + 12, fill="#3a3a5a")
             return y + 24
 
@@ -1152,15 +798,15 @@ class ReverbGUI:
         y = 20
         y = info_heading(y, "SIGNAL CHAIN")
 
-        c.create_text(14, y, text="▶ Input", fill="#6a8a6a", font=F_LABEL, anchor="w")
+        c.create_text(14, y, text="\u25b6 Input", fill="#6a8a6a", font=F_LABEL, anchor="w")
         y += 22
-        c.create_text(left_w // 2, y, text="↓", fill=WIRE, font=F_TITLE)
+        c.create_text(left_w // 2, y, text="\u2193", fill=WIRE, font=F_TITLE)
         y += 18
 
         pre_ms = p["pre_delay"] / SR * 1000
         y = info_row(y, "Pre-delay", f"{pre_ms:.0f} ms",
                      "silence before reverb" if pre_ms > 5 else "")
-        c.create_text(left_w // 2, y, text="↓", fill=WIRE, font=F_TITLE)
+        c.create_text(left_w // 2, y, text="\u2193", fill=WIRE, font=F_TITLE)
         y += 18
 
         diff = p.get("diffusion", 0)
@@ -1170,7 +816,7 @@ class ReverbGUI:
             y = info_row(y, "Diffusion", f"{n_st}x AP g={diff:.2f}", desc)
         else:
             y = info_row(y, "Diffusion", "OFF")
-        c.create_text(left_w // 2, y, text="↓", fill=WIRE, font=F_TITLE)
+        c.create_text(left_w // 2, y, text="\u2193", fill=WIRE, font=F_TITLE)
         y += 18
 
         y = info_heading(y, "FDN (8 nodes)")
@@ -1183,7 +829,7 @@ class ReverbGUI:
         elif avg_d < 50: size_word = "medium room"
         elif avg_d < 120: size_word = "large hall"
         else: size_word = "vast space"
-        y = info_row(y, "Delays", f"{min_d:.0f}–{max_d:.0f} ms", size_word)
+        y = info_row(y, "Delays", f"{min_d:.0f}\u2013{max_d:.0f} ms", size_word)
 
         damps = p["damping_coeffs"]
         avg_damp = sum(damps) / len(damps)
@@ -1211,14 +857,14 @@ class ReverbGUI:
 
         matrix_type = p.get("matrix_type", "householder")
         mat_labels = {
-            "householder": "uniform coupling", "hadamard": "structured +/−",
+            "householder": "uniform coupling", "hadamard": "structured +/\u2212",
             "diagonal": "isolated nodes", "random_orthogonal": "random unitary",
             "circulant": "ring topology", "stautner_puckette": "paired nodes",
             "zero": "disconnected", "custom": "custom wiring",
         }
         y = info_row(y, "Matrix", matrix_type, mat_labels.get(matrix_type, ""))
 
-        c.create_text(left_w // 2, y, text="↓", fill=WIRE, font=F_TITLE)
+        c.create_text(left_w // 2, y, text="\u2193", fill=WIRE, font=F_TITLE)
         y += 18
         mix = p["wet_dry"]
         if mix < 0.01: mix_word = "dry only"
@@ -1227,9 +873,9 @@ class ReverbGUI:
         elif mix < 0.99: mix_word = "mostly wet"
         else: mix_word = "100% reverb"
         y = info_row(y, "Wet / Dry", f"{mix:.2f}", mix_word)
-        c.create_text(left_w // 2, y, text="↓", fill=WIRE, font=F_TITLE)
+        c.create_text(left_w // 2, y, text="\u2193", fill=WIRE, font=F_TITLE)
         y += 18
-        c.create_text(14, y, text="■ Output", fill="#6a8a6a", font=F_LABEL, anchor="w")
+        c.create_text(14, y, text="\u25a0 Output", fill="#6a8a6a", font=F_LABEL, anchor="w")
 
         c.create_line(left_w, 10, left_w, H - 10, fill="#2a2a4a", width=1)
 
@@ -1324,7 +970,7 @@ class ReverbGUI:
                                    nx - bar_w + bar_w * 2 * damps[i], bar_y + 4,
                                    fill=DAMP_COL, outline="")
 
-        c.create_text(ring_cx, 16, text="FEEDBACK DELAY NETWORK — Matrix Wiring",
+        c.create_text(ring_cx, 16, text="FEEDBACK DELAY NETWORK \u2014 Matrix Wiring",
                       fill=TITLE_COL, font=F_TITLE)
 
         # Legend
@@ -1356,1072 +1002,295 @@ class ReverbGUI:
                           fill=WARN_COL, font=F_VAL)
 
     # ------------------------------------------------------------------
-    # Slider helpers
+    # Guide page (custom formatted)
     # ------------------------------------------------------------------
 
-    def _section(self, parent, row, title, lockable=True):
-        sep = ttk.Separator(parent, orient="horizontal")
-        sep.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 2))
-        header = ttk.Frame(parent)
-        header.grid(row=row+1, column=0, columnspan=4, sticky="w", pady=(0, 1))
-        title_lbl = ttk.Label(header, text=title, font=("TkDefaultFont", 0, "bold"))
-        title_lbl.pack(side="left")
-        if lockable:
-            lock_var = tk.BooleanVar(value=False)
-            self.section_locks[title] = lock_var
-            ttk.Checkbutton(header, text="\U0001F512", variable=lock_var).pack(
-                side="left", padx=(6, 0))
-        next_row = row + 2
-        if title in SECTION_DESCRIPTIONS:
-            desc_lbl = ttk.Label(parent, text=SECTION_DESCRIPTIONS[title],
-                                 foreground="#888888", font=("Helvetica", 9))
-            desc_lbl.grid(row=next_row, column=0, columnspan=4, sticky="w", pady=(0, 3))
-            next_row += 1
-        self._current_section = title
-        return next_row
-
-    def _on_global_scroll(self, event):
-        """Route mousewheel/touchpad scroll to the Scale widget under the cursor."""
-        w = self.root.winfo_containing(event.x_root, event.y_root)
-        if w is None:
-            return
-        path = str(w)
-        if path not in self._scroll_widgets:
-            return
-        var, from_, to_ = self._scroll_widgets[path]
-        raw = event.delta if event.delta else (-1 if event.num == 5 else 1)
-        # Tk 9.0 TouchpadScroll packs X,Y into one int: Y in low 16 bits (signed)
-        y = raw & 0xFFFF
-        if y >= 0x8000:
-            y -= 0x10000
-        step = (to_ - from_) * 0.002
-        var.set(max(from_, min(to_, var.get() + y * step)))
-        self._schedule_autoplay()
-
-    def _bind_scroll(self, widget, var, from_, to_):
-        self._scroll_widgets[str(widget)] = (var, from_, to_)
-
-    @staticmethod
-    def _fmt_val(val, fmt=".2f"):
-        return f"{val:{fmt}}"
-
-    def _add_slider(self, parent, row, key, label, from_, to_, value, length=350):
-        label_frame = ttk.Frame(parent)
-        label_frame.grid(row=row, column=0, sticky="w", pady=1)
-        ttk.Label(label_frame, text=label, font=("TkDefaultFont", 0, "bold")).pack(anchor="w")
-        if key in SLIDER_DESCRIPTIONS:
-            ttk.Label(label_frame, text=SLIDER_DESCRIPTIONS[key],
-                      foreground="#888888", font=("Helvetica", 9)).pack(anchor="w")
-        var = tk.DoubleVar(value=value)
-        # Frame holding [min_label | scale | max_label]
-        slider_frame = ttk.Frame(parent)
-        slider_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=1)
-        min_text = self._fmt_val(from_)
-        max_text = self._fmt_val(to_)
-        ttk.Label(slider_frame, text=min_text, width=len(min_text)+1,
-                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
-        scale = ttk.Scale(slider_frame, from_=from_, to=to_, variable=var,
-                          orient="horizontal", length=length)
-        scale.pack(side="left", fill="x", expand=True)
-        ttk.Label(slider_frame, text=max_text, width=len(max_text)+1,
-                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
-        self._bind_scroll(scale, var, from_, to_)
-        # Typeable entry field
-        entry_var = tk.StringVar(value=f"{value:.2f}")
-        entry = ttk.Entry(parent, textvariable=entry_var, width=7, justify="right")
-        entry.grid(row=row, column=2, sticky="w", pady=1)
-        def _on_slider_change(*_a, v=var, ev=entry_var):
-            ev.set(f"{v.get():.2f}")
-        var.trace_add("write", _on_slider_change)
-        def _on_entry_return(event, v=var, ev=entry_var, _lo=from_, _hi=to_):
-            try:
-                val = float(ev.get())
-                val = max(_lo, min(_hi, val))
-                v.set(val)
-                self._schedule_autoplay()
-            except ValueError:
-                ev.set(f"{v.get():.2f}")
-        entry.bind("<Return>", _on_entry_return)
-        entry.bind("<FocusOut>", _on_entry_return)
-        self.sliders[key] = var
-        lock_var = tk.BooleanVar(value=False)
-        self.locks[key] = lock_var
-        self._param_section[key] = self._current_section
-        ttk.Checkbutton(parent, variable=lock_var).grid(row=row, column=3, pady=1)
-        scale.bind("<ButtonRelease-1>", lambda e: self._schedule_autoplay())
-        return row + 1
-
-    def _add_node_slider(self, parent, row, key, label, from_, to_, value, var_list, fmt=".2f", length=350):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=0)
-        var = tk.DoubleVar(value=value)
-        # Frame holding [min_label | scale | max_label]
-        slider_frame = ttk.Frame(parent)
-        slider_frame.grid(row=row, column=1, sticky="ew", padx=5, pady=0)
-        min_text = self._fmt_val(from_, fmt)
-        max_text = self._fmt_val(to_, fmt)
-        ttk.Label(slider_frame, text=min_text, width=len(min_text)+1,
-                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
-        scale = ttk.Scale(slider_frame, from_=from_, to=to_, variable=var,
-                          orient="horizontal", length=length)
-        scale.pack(side="left", fill="x", expand=True)
-        ttk.Label(slider_frame, text=max_text, width=len(max_text)+1,
-                  foreground="#888888", font=("Helvetica", 9)).pack(side="left")
-        self._bind_scroll(scale, var, from_, to_)
-        # Typeable entry field
-        entry_var = tk.StringVar(value=f"{value:{fmt}}")
-        entry = ttk.Entry(parent, textvariable=entry_var, width=7, justify="right")
-        entry.grid(row=row, column=2, sticky="w", pady=0)
-        def _on_slider_change(*_a, v=var, ev=entry_var, f=fmt):
-            ev.set(f"{v.get():{f}}")
-        var.trace_add("write", _on_slider_change)
-        def _on_entry_return(event, v=var, ev=entry_var, _lo=from_, _hi=to_, f=fmt):
-            try:
-                val = float(ev.get())
-                val = max(_lo, min(_hi, val))
-                v.set(val)
-                self._schedule_autoplay()
-            except ValueError:
-                ev.set(f"{v.get():{f}}")
-        entry.bind("<Return>", _on_entry_return)
-        entry.bind("<FocusOut>", _on_entry_return)
-        var_list.append(var)
-        lock_var = tk.BooleanVar(value=False)
-        self.locks[key] = lock_var
-        self._param_section[key] = self._current_section
-        ttk.Checkbutton(parent, variable=lock_var).grid(row=row, column=3, pady=0)
-        scale.bind("<ButtonRelease-1>", lambda e: self._schedule_autoplay())
-        return row + 1
-
-    # ------------------------------------------------------------------
-    # Param sync
-    # ------------------------------------------------------------------
-
-    def _read_params_from_ui(self):
-        p = dict(self.params)
-        p["feedback_gain"] = self.sliders["feedback_gain"].get()
-        p["wet_dry"] = self.sliders["wet_dry"].get()
-        p["diffusion"] = self.sliders["diffusion"].get()
-        p["saturation"] = self.sliders["saturation"].get()
-        p["pre_delay"] = int(self.sliders["pre_delay_ms"].get() / 1000 * SR)
-        p["matrix_type"] = self.matrix_var.get()
-        p["delay_times"] = [max(1, int(s.get() / 1000 * SR)) for s in self.delay_sliders]
-        p["damping_coeffs"] = [s.get() for s in self.damping_sliders]
-        p["input_gains"] = [s.get() for s in self.input_gain_sliders]
-        p["output_gains"] = [s.get() for s in self.output_gain_sliders]
-        p["stereo_width"] = self.sliders["stereo_width"].get()
-        p["node_pans"] = [s.get() for s in self.node_pan_sliders]
-        # Modulation
-        wf_map = {"sine": 0, "triangle": 1, "sample_hold": 2}
-        p["mod_master_rate"] = self.sliders["mod_master_rate"].get()
-        p["mod_waveform"] = wf_map.get(self.mod_waveform_var.get(), 0)
-        p["mod_correlation"] = self.sliders["mod_correlation"].get()
-        p["mod_depth_delay"] = [self.sliders["mod_depth_delay_global"].get()] * 8
-        p["mod_depth_damping"] = [self.sliders["mod_depth_damping_global"].get()] * 8
-        p["mod_depth_output"] = [self.sliders["mod_depth_output_global"].get()] * 8
-        p["mod_depth_matrix"] = self.sliders["mod_depth_matrix"].get()
-        p["mod_node_rate_mult"] = [s.get() for s in self.mod_rate_mult_sliders]
-        if p["matrix_type"] == "custom" and self.custom_matrix is not None:
-            p["matrix_custom"] = self.custom_matrix.tolist()
-        return p
-
-    def _write_params_to_ui(self, p):
-        self.params = p
-        self.sliders["feedback_gain"].set(p["feedback_gain"])
-        self.sliders["wet_dry"].set(p["wet_dry"])
-        self.sliders["diffusion"].set(p["diffusion"])
-        self.sliders["saturation"].set(p.get("saturation", 0.0))
-        self.sliders["pre_delay_ms"].set(p["pre_delay"] / SR * 1000)
-        self.matrix_var.set(p.get("matrix_type", "householder"))
-        self.sliders["stereo_width"].set(p.get("stereo_width", 1.0))
-        node_pans = p.get("node_pans",
-            [-1.0, -0.714, -0.429, -0.143, 0.143, 0.429, 0.714, 1.0])
-        for i in range(8):
-            self.delay_sliders[i].set(p["delay_times"][i] / SR * 1000)
-            self.damping_sliders[i].set(p["damping_coeffs"][i])
-            self.input_gain_sliders[i].set(p["input_gains"][i])
-            self.output_gain_sliders[i].set(p["output_gains"][i])
-            self.node_pan_sliders[i].set(node_pans[i])
-        # Modulation
-        self.sliders["mod_master_rate"].set(p.get("mod_master_rate", 0.0))
-        dd = p.get("mod_depth_delay", [0.0] * 8)
-        self.sliders["mod_depth_delay_global"].set(dd[0] if isinstance(dd, list) else dd)
-        ddamp = p.get("mod_depth_damping", [0.0] * 8)
-        self.sliders["mod_depth_damping_global"].set(ddamp[0] if isinstance(ddamp, list) else ddamp)
-        dout = p.get("mod_depth_output", [0.0] * 8)
-        self.sliders["mod_depth_output_global"].set(dout[0] if isinstance(dout, list) else dout)
-        self.sliders["mod_depth_matrix"].set(p.get("mod_depth_matrix", 0.0))
-        self.sliders["mod_correlation"].set(p.get("mod_correlation", 1.0))
-        wf_rmap = {0: "sine", 1: "triangle", 2: "sample_hold"}
-        self.mod_waveform_var.set(wf_rmap.get(p.get("mod_waveform", 0), "sine"))
-        mrm = p.get("mod_node_rate_mult", [1.0] * 8)
-        for i in range(8):
-            self.mod_rate_mult_sliders[i].set(mrm[i])
-        # Update heatmap
-        if "matrix_custom" in p and p.get("matrix_type") == "custom":
-            self.custom_matrix = np.array(p["matrix_custom"])
-        else:
-            self._load_matrix_from_topology()
-        self._draw_heatmap()
-
-    # ------------------------------------------------------------------
-    # Matrix Heatmap
-    # ------------------------------------------------------------------
-
-    def _load_matrix_from_topology(self):
-        """Load the current named topology into the custom matrix."""
-        name = self.matrix_var.get()
-        if name in MATRIX_TYPES:
-            self.custom_matrix = get_matrix(name, 8,
-                                            seed=self.params.get("matrix_seed", 42))
-        elif self.custom_matrix is None:
-            self.custom_matrix = get_matrix("householder", 8)
-
-    def _draw_heatmap(self):
-        """Draw the 8x8 matrix as a color heatmap."""
-        if self.custom_matrix is None:
-            return
-        c = self.heatmap_canvas
-        c.delete("all")
-        cell = self.heatmap_cell
-        pad = 30  # space for labels
-
-        # Find max absolute value for color scaling
-        vmax = max(np.max(np.abs(self.custom_matrix)), 0.01)
-
-        for row in range(8):
-            for col in range(8):
-                val = self.custom_matrix[row, col]
-                # Color: blue for negative, red for positive, black for zero
-                intensity = min(abs(val) / vmax, 1.0)
-                if val >= 0:
-                    r = int(40 + 215 * intensity)
-                    g = int(40 + 80 * intensity)
-                    b = 40
-                else:
-                    r = 40
-                    g = int(40 + 80 * intensity)
-                    b = int(40 + 215 * intensity)
-                color = f"#{r:02x}{g:02x}{b:02x}"
-
-                x0 = pad + col * cell
-                y0 = pad + row * cell
-                x1 = x0 + cell
-                y1 = y0 + cell
-
-                c.create_rectangle(x0, y0, x1, y1, fill=color, outline="gray40")
-
-                # Show value text for larger cells
-                text_color = "white" if intensity > 0.3 else "gray70"
-                fmt = f"{val:.1f}" if cell < 30 else f"{val:.2f}"
-                c.create_text(x0 + cell//2, y0 + cell//2,
-                              text=fmt, fill=text_color, font=("TkDefaultFont", 7))
-
-        # Row/column labels
-        for i in range(8):
-            c.create_text(pad + i * cell + cell//2, pad - 12,
-                          text=str(i), fill="gray70", font=("TkDefaultFont", 9))
-            c.create_text(pad - 12, pad + i * cell + cell//2,
-                          text=str(i), fill="gray70", font=("TkDefaultFont", 9))
-
-        # Axis labels
-        c.create_text(pad + 4 * cell, pad - 25, text="from delay line",
-                      fill="gray50", font=("TkDefaultFont", 8))
-        c.create_text(pad - 25, pad + 4 * cell, text="to",
-                      fill="gray50", font=("TkDefaultFont", 8), angle=90)
-
-        # Selected cell highlight
-        if self.selected_cell:
-            sr, sc = self.selected_cell
-            x0 = pad + sc * cell
-            y0 = pad + sr * cell
-            c.create_rectangle(x0, y0, x0 + cell, y0 + cell,
-                               outline="cyan", width=2)
-
-        # Unitary indicator
-        unitary = is_unitary(self.custom_matrix)
-        if unitary:
-            self.unitary_label.config(text="Unitary: Yes", foreground="green")
-        else:
-            self.unitary_label.config(text="Unitary: No", foreground="orange")
-
-    def _heatmap_cell_at(self, x, y):
-        """Return (row, col) for canvas coordinates, or None."""
-        pad = 30
-        cell = self.heatmap_cell
-        col = (x - pad) // cell
-        row = (y - pad) // cell
-        if 0 <= row < 8 and 0 <= col < 8:
-            return int(row), int(col)
-        return None
-
-    def _on_heatmap_click(self, event):
-        pos = self._heatmap_cell_at(event.x, event.y)
-        if pos is None:
-            return
-        row, col = pos
-        self.selected_cell = (row, col)
-        val = self.custom_matrix[row, col]
-        self.cell_label.config(text=f"({row}, {col})")
-        self.cell_value_var.set(f"{val:.3f}")
-        self._draw_heatmap()
-
-    def _on_heatmap_drag(self, event):
-        """Drag up/down on a cell to adjust its value."""
-        pos = self._heatmap_cell_at(event.x, event.y)
-        if pos is None or self.custom_matrix is None:
-            return
-        if self.selected_cell is None:
-            return
-        row, col = self.selected_cell
-        # Use y position relative to cell center to set value
-        pad = 30
-        cell = self.heatmap_cell
-        cell_center_y = pad + row * cell + cell // 2
-        delta = (cell_center_y - event.y) / (cell * 2)  # ±0.5 range per cell height
-        new_val = max(-1.5, min(1.5, delta * 2))
-        self.custom_matrix[row, col] = new_val
-        self.cell_value_var.set(f"{new_val:.3f}")
-        self._draw_heatmap()
-
-    def _on_heatmap_right_click(self, event):
-        """Right-click to zero a cell."""
-        pos = self._heatmap_cell_at(event.x, event.y)
-        if pos is None or self.custom_matrix is None:
-            return
-        row, col = pos
-        self.custom_matrix[row, col] = 0.0
-        self.selected_cell = (row, col)
-        self.cell_label.config(text=f"({row}, {col})")
-        self.cell_value_var.set("0.000")
-        self._draw_heatmap()
-
-    def _on_cell_value_enter(self, event=None):
-        """Set cell value from the entry field."""
-        if self.selected_cell is None or self.custom_matrix is None:
-            return
-        try:
-            val = float(self.cell_value_var.get())
-        except ValueError:
-            return
-        row, col = self.selected_cell
-        self.custom_matrix[row, col] = val
-        self._draw_heatmap()
-
-    def _on_topology_changed(self, event=None):
-        name = self.matrix_var.get()
-        if name != "custom":
-            self._load_matrix_from_topology()
-            self._draw_heatmap()
-            self.status_var.set(f"Matrix: {name}")
-
-    def _on_snap_unitary(self):
-        if self.custom_matrix is None:
-            return
-        self.custom_matrix = nearest_unitary(self.custom_matrix)
-        self._draw_heatmap()
-        if self.selected_cell:
-            r, c = self.selected_cell
-            self.cell_value_var.set(f"{self.custom_matrix[r, c]:.3f}")
-        self.status_var.set("Snapped to nearest unitary matrix")
-
-    def _on_use_custom_matrix(self):
-        """Switch to custom matrix mode — uses the heatmap matrix for rendering."""
-        self.matrix_var.set("custom")
-        self.status_var.set("Using custom matrix — edit the heatmap, then Play")
-
-    def _is_locked(self, key):
-        """Check if a param is locked (individually or via its section lock)."""
-        if key in self.locks and self.locks[key].get():
-            return True
-        section = self._param_section.get(key)
-        if section and section in self.section_locks and self.section_locks[section].get():
-            return True
-        return False
-
-    def _on_randomize_knobs(self):
-        """Randomize all parameters across the full range, including extreme values.
-        Respects per-param and section-level locks."""
-        rng = np.random.default_rng()
-        # Global sliders
-        for key, lo, hi in [("feedback_gain", 0.0, 2.0), ("wet_dry", 0.0, 1.0),
-                             ("diffusion", 0.0, 0.7), ("saturation", 0.0, 1.0),
-                             ("pre_delay_ms", 0.0, 250.0), ("stereo_width", 0.0, 1.0)]:
-            if not self._is_locked(key):
-                self.sliders[key].set(rng.uniform(lo, hi))
-        # Per-node sliders
-        node_groups = [
-            (self.delay_sliders, "delay", 0.5, 300.0),
-            (self.damping_sliders, "damp", 0.0, 0.99),
-            (self.input_gain_sliders, "ig", 0.0, 0.5),
-            (self.output_gain_sliders, "og", 0.0, 2.0),
-            (self.node_pan_sliders, "pan", -1.0, 1.0),
-        ]
-        for var_list, prefix, lo, hi in node_groups:
-            for i in range(8):
-                if not self._is_locked(f"{prefix}_{i}"):
-                    var_list[i].set(rng.uniform(lo, hi))
-        # Modulation sliders
-        for key, lo, hi in [("mod_master_rate", 0.0, 20.0),
-                             ("mod_depth_delay_global", 0.0, 30.0),
-                             ("mod_depth_damping_global", 0.0, 0.3),
-                             ("mod_depth_output_global", 0.0, 0.5),
-                             ("mod_depth_matrix", 0.0, 0.5),
-                             ("mod_correlation", 0.0, 1.0)]:
-            if not self._is_locked(key):
-                self.sliders[key].set(rng.uniform(lo, hi))
-        if not self._is_locked("mod_waveform"):
-            self.mod_waveform_var.set(rng.choice(["sine", "triangle", "sample_hold"]))
-        for i in range(8):
-            if not self._is_locked(f"mrm_{i}"):
-                self.mod_rate_mult_sliders[i].set(rng.choice([0.5, 1.0, 1.0, 2.0, 3.0]))
-        # Matrix — respect Feedback Matrix section lock
-        matrix_locked = ("Feedback Matrix" in self.section_locks
-                         and self.section_locks["Feedback Matrix"].get())
-        if not matrix_locked:
-            mat = rng.standard_normal((8, 8))
-            if rng.random() < 0.5:
-                mat = nearest_unitary(mat)
-            self.custom_matrix = mat
-            self.matrix_var.set("custom")
-            self._draw_heatmap()
-        self.status_var.set("Randomized all")
-
-    def _on_randomize_and_play(self):
-        """Randomize everything then immediately render and play."""
-        self._on_randomize_knobs()
-        self._on_play()
-
-    def _on_randomize_matrix(self):
-        """Generate a random 8x8 matrix, optionally projected to unitary."""
-        if ("Feedback Matrix" in self.section_locks
-                and self.section_locks["Feedback Matrix"].get()):
-            self.status_var.set("Matrix is locked")
-            return
-        rng = np.random.default_rng()
-        mat = rng.standard_normal((8, 8))
-        if self.random_unitary_var.get():
-            mat = nearest_unitary(mat)
-        self.custom_matrix = mat
-        self.matrix_var.set("custom")
-        self._draw_heatmap()
-        label = "unitary" if self.random_unitary_var.get() else "non-unitary"
-        self.status_var.set(f"Randomized matrix ({label})")
-
-    # ------------------------------------------------------------------
-    # XY Pad
-    # ------------------------------------------------------------------
-
-    _xy_ranges = {"feedback_gain": (0.0, 2.0), "wet_dry": (0.0, 1.0),
-                   "diffusion": (0.0, 0.7), "pre_delay_ms": (0.0, 250.0),
-                   "saturation": (0.0, 1.0), "stereo_width": (0.0, 1.0),
-                   "mod_master_rate": (0.0, 100.0),
-                   "mod_depth_delay_global": (0.0, 100.0)}
-
-    def _xy_draw_crosshair(self, x, y):
-        self.xy_canvas.delete("crosshair")
-        s = self.xy_size
-        self.xy_canvas.create_line(x, 0, x, s, fill="gray30", tags="crosshair")
-        self.xy_canvas.create_line(0, y, s, y, fill="gray30", tags="crosshair")
-        self.xy_canvas.create_oval(x-6, y-6, x+6, y+6, outline="cyan", width=2, tags="crosshair")
-
-    def _xy_sync(self):
-        """Update crosshair position from current slider values."""
-        s = self.xy_size
-        x_key = self.xy_x_var.get()
-        y_key = self.xy_y_var.get()
-        # Compute normalized positions
-        def _norm(key):
-            if key in self.sliders and key in self._xy_ranges:
-                lo, hi = self._xy_ranges[key]
-                return (self.sliders[key].get() - lo) / (hi - lo)
-            return 0.5
-        px = int(max(0, min(s, _norm(x_key) * s)))
-        py = int(max(0, min(s, (1.0 - _norm(y_key)) * s)))
-        self._xy_draw_crosshair(px, py)
-
-    def _on_xy_drag(self, event):
-        s = self.xy_size
-        nx = max(0.0, min(1.0, event.x / s))
-        ny = max(0.0, min(1.0, 1.0 - event.y / s))
-        x_key = self.xy_x_var.get()
-        y_key = self.xy_y_var.get()
-        for key, val in [(x_key, nx), (y_key, ny)]:
-            if key in self.sliders and key in self._xy_ranges:
-                lo, hi = self._xy_ranges[key]
-                self.sliders[key].set(lo + val * (hi - lo))
-        self._xy_draw_crosshair(event.x, event.y)
-
-    # ------------------------------------------------------------------
-    # File I/O
-    # ------------------------------------------------------------------
-
-    def _load_wav(self, path):
-        from scipy.signal import resample_poly
-        from math import gcd
-        sr, data = wavfile.read(path)
-        if data.dtype == np.int16:
-            audio = data.astype(np.float64) / 32768.0
-        elif data.dtype == np.int32:
-            audio = data.astype(np.float64) / 2147483648.0
-        else:
-            audio = data.astype(np.float64)
-        if sr != SR:
-            g = gcd(SR, sr)
-            audio = resample_poly(audio, SR // g, sr // g, axis=0)
-        # Keep stereo as (samples, 2) — don't downmix
-        self.source_audio = audio
-        self.source_path = path
-        self.rendered_audio = None
-        self.rendered_warning = ""
-        self.rendered_params = None
-
-        # Analyze source for LLM context
-        from shared.analysis import analyze
-        from shared.audio_features import generate_spectrogram_png
-        self.source_metrics = analyze(audio, SR)
-        self.source_spectrogram = generate_spectrogram_png(audio, SR)
-        if hasattr(self, 'llm'):
-            self.llm.reset_session()
-
-    def _source_text(self):
-        if self.source_path:
-            name = os.path.basename(self.source_path)
-            dur = len(self.source_audio) / SR if self.source_audio is not None else 0
-            return f"{name} ({dur:.1f}s)"
-        return "(no file loaded)"
-
-    def _on_load_wav(self):
-        path = filedialog.askopenfilename(
-            title="Select source WAV", initialdir=TEST_SIGNALS_DIR,
-            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")])
-        if path:
-            self._load_wav(path)
-            self.source_label.config(text=self._source_text())
-            self.status_var.set("Loaded: " + os.path.basename(path))
-            self._draw_input_waveform()
-
-    # ------------------------------------------------------------------
-    # Render & Playback
-    # ------------------------------------------------------------------
-
-    def _params_snapshot(self, params):
-        return json.dumps(params, sort_keys=True)
-
-    # ------------------------------------------------------------------
-    # Generation history
-    # ------------------------------------------------------------------
-
-    def _save_generation(self):
-        """Save current render as a generation snapshot."""
-        if self.rendered_audio is None:
-            return
-        snap = {
-            'params': self.rendered_params.copy() if isinstance(self.rendered_params, dict) else self.rendered_params,
-            'audio': self.rendered_audio,
-            'metrics': self.rendered_metrics,
-            'warning': self.rendered_warning,
-            'spectrogram': getattr(self, 'rendered_spectrogram', None),
-        }
-        # Truncate forward history if we're not at the end
-        if self._gen_index < len(self._gen_history) - 1:
-            self._gen_history = self._gen_history[:self._gen_index + 1]
-        self._gen_history.append(snap)
-        # Cap history size
-        if len(self._gen_history) > self._gen_max:
-            self._gen_history = self._gen_history[-self._gen_max:]
-        self._gen_index = len(self._gen_history) - 1
-        self._update_gen_buttons()
-        # Show notice in AI chat if triggered by Claude
-        if getattr(self, '_pending_gen_notice', False):
-            self._pending_gen_notice = False
-            gen = self._gen_index + 1
-            self.ai_response.configure(state="normal")
-            self.ai_response.insert("end", f"\n[Params applied → Gen {gen}]\n", "system_notice")
-            self.ai_response.see("end")
-            self.ai_response.configure(state="disabled")
-
-    def _update_gen_buttons(self):
-        """Update rewind/forward button state and generation label."""
-        total = len(self._gen_history)
-        if total == 0:
-            self._gen_label_var.set("Gen 0")
-            self._gen_back_btn.configure(state="disabled")
-            self._gen_fwd_btn.configure(state="disabled")
-        else:
-            self._gen_label_var.set(f"Gen {self._gen_index + 1}/{total}")
-            self._gen_back_btn.configure(state="normal" if self._gen_index > 0 else "disabled")
-            self._gen_fwd_btn.configure(state="normal" if self._gen_index < total - 1 else "disabled")
-
-    def _restore_generation(self, index):
-        """Restore a generation snapshot by index."""
-        snap = self._gen_history[index]
-        self._gen_index = index
-        self._write_params_to_ui(snap['params'])
-        self.rendered_audio = snap['audio']
-        self.rendered_params = snap['params']
-        self.rendered_metrics = snap['metrics']
-        self.rendered_warning = snap['warning']
-        self.rendered_spectrogram = snap.get('spectrogram')
-        self._play_audio(np.clip(snap['audio'], -1.0, 1.0).astype(np.float32))
-        dur = len(snap['audio']) / SR
-        self.status_var.set(f"Gen {index + 1} — Playing ({dur:.1f}s){snap['warning']}")
-        self._draw_waveform()
-        self._draw_spectrograms()
-        self._update_gen_buttons()
-
-    def _on_gen_back(self):
-        if self._gen_index > 0:
-            self._restore_generation(self._gen_index - 1)
-
-    def _on_gen_forward(self):
-        if self._gen_index < len(self._gen_history) - 1:
-            self._restore_generation(self._gen_index + 1)
-
-    def _render_and_play(self, params, on_complete=None, status_prefix=None):
-        """Render full buffer in background, then play with sd.play()."""
-        if self._autoplay_id is not None:
-            self.root.after_cancel(self._autoplay_id)
-            self._autoplay_id = None
-        self._stop_cursor()
-        self.rendering = True
-        if status_prefix:
-            self.status_var.set(f"{status_prefix} {self.llm._iterate_count}/{self.llm.MAX_ITERATE}")
-        else:
-            self.status_var.set("Rendering...")
-
-        def do_render():
-            try:
-                t_total = time.perf_counter()
-
-                tail_len = int(self.sliders["tail_length"].get() * SR)
-                if self.source_audio.ndim == 2:
-                    tail = np.zeros((tail_len, self.source_audio.shape[1]))
-                else:
-                    tail = np.zeros(tail_len)
-                audio_in = np.concatenate([self.source_audio, tail])
-
-                t0 = time.perf_counter()
-                output = render_fdn(audio_in, params)
-                t_render = time.perf_counter() - t0
-
-                ok, err = safety_check(output)
-                if not ok:
-                    self.root.after(0, lambda: self.status_var.set(err))
-                    return
-
-                output, loud_warning = normalize_output(output)
-
-                from shared.analysis import analyze
-                from shared.audio_features import generate_spectrogram_png
-
-                t0 = time.perf_counter()
-                self.rendered_metrics = analyze(output, SR)
-                t_analyze = time.perf_counter() - t0
-
-                t0 = time.perf_counter()
-                self.rendered_spectrogram = generate_spectrogram_png(output, SR)
-                t_spec = time.perf_counter() - t0
-
-                self.rendered_audio = output
-                self.rendered_warning = loud_warning
-                self.rendered_params = self._params_snapshot(params)
-                dur = len(output) / SR
-                t_pipeline = time.perf_counter() - t_total
-
-                timing = (f"render {t_render:.3f}s + analyze {t_analyze:.3f}s "
-                          f"+ spec {t_spec:.3f}s = {t_pipeline:.3f}s")
-
-                def on_gui():
-                    self._save_generation()
-                    self._play_audio(np.clip(output, -1.0, 1.0).astype(np.float32))
-                    gen = self._gen_index + 1
-                    if status_prefix:
-                        self.status_var.set(
-                            f"Gen {gen} — {status_prefix} {self.llm._iterate_count}/{self.llm.MAX_ITERATE} "
-                            f"complete [{timing}]")
-                    else:
-                        self.status_var.set(
-                            f"Gen {gen} — Playing ({dur:.1f}s) [{timing}]{loud_warning}")
-                    self._draw_waveform()
-                    self._draw_spectrograms()
-                    if on_complete:
-                        on_complete()
-
-                self.root.after(0, on_gui)
-                self.root.after(50, self._check_autoplay)
-            except Exception as exc:
-                self.root.after(0, lambda: self.status_var.set(f"ERROR: {exc}"))
-            finally:
-                self.rendering = False
-
-        threading.Thread(target=do_render, daemon=True).start()
-
-    def _play_audio(self, audio):
-        """Play audio through the selected output device."""
-        sd.default.reset()
-        sd.play(audio, SR, device=self._output_device_idx)
-        self._start_cursor(audio, self._output_canvases())
-
-    # ------------------------------------------------------------------
-    # Output device selection
-    # ------------------------------------------------------------------
-
-    def _get_output_devices(self):
-        devices = sd.query_devices()
-        out = []
-        for i, d in enumerate(devices):
-            if d['max_output_channels'] > 0:
-                out.append((i, d['name']))
-        return out
-
-    def _refresh_devices(self):
-        devs = self._get_output_devices()
-        self._output_devices = devs
-        names = ["System Default"] + [name for _, name in devs]
-        self._device_combo['values'] = names
-        if self._output_device_idx is not None:
-            for i, (idx, _) in enumerate(devs):
-                if idx == self._output_device_idx:
-                    self._device_combo.current(i + 1)
-                    return
-        self._output_device_idx = None
-        self._device_combo.current(0)
-
-    def _on_device_changed(self, event=None):
-        sel = self._device_combo.current()
-        if sel <= 0:
-            self._output_device_idx = None
-        else:
-            self._output_device_idx = self._output_devices[sel - 1][0]
-
-    # ------------------------------------------------------------------
-    # Playback cursor & seek
-    # ------------------------------------------------------------------
-
-    def _output_canvases(self):
-        return [(self.waveform_canvas, WAVE_PAD_LEFT, WAVE_PAD_RIGHT),
-                (self.spec_output_canvas, SPEC_PAD_LEFT, SPEC_PAD_RIGHT)]
-
-    def _input_canvases(self):
-        return [(self.input_waveform_canvas, WAVE_PAD_LEFT, WAVE_PAD_RIGHT),
-                (self.spec_input_canvas, SPEC_PAD_LEFT, SPEC_PAD_RIGHT)]
-
-    def _start_cursor(self, audio, canvases):
-        self._stop_cursor()
-        self._playback_audio = audio
-        self._playback_start = time.time()
-        self._playback_length = len(audio) / SR
-        self._cursor_canvases = canvases
-        self._tick_cursor()
-
-    def _stop_cursor(self):
-        if self._cursor_timer is not None:
-            self.root.after_cancel(self._cursor_timer)
-            self._cursor_timer = None
-        for canvas, _, _ in self._cursor_canvases:
-            canvas.delete("cursor")
-        self._cursor_canvases = []
-        self._playback_audio = None
-        self._playback_start = None
-
-    def _tick_cursor(self):
-        if self._playback_start is None:
-            return
-        elapsed = time.time() - self._playback_start
-        if elapsed >= self._playback_length or elapsed < 0:
-            self._stop_cursor()
-            return
-        frac = elapsed / self._playback_length
-        for canvas, pl, pr in self._cursor_canvases:
-            canvas.delete("cursor")
-            w = canvas.winfo_width()
-            h = canvas.winfo_height()
-            x = pl + frac * (w - pl - pr)
-            canvas.create_line(x, 0, x, h, fill="#ffffff",
-                               width=1, tags="cursor")
-        self._cursor_timer = self.root.after(40, self._tick_cursor)
-
-    def _on_output_seek(self, event):
-        if self.rendered_audio is None:
-            return
-        audio = np.clip(self.rendered_audio, -1.0, 1.0).astype(np.float32)
-        pl, pr = self._canvas_padding(event.widget)
-        self._seek_and_play(event, audio, pl, pr, self._output_canvases())
-        dur = len(audio) / SR
-        self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
-
-    def _on_input_seek(self, event):
-        if self.source_audio is None:
-            return
-        audio = self.source_audio.astype(np.float32)
-        pl, pr = self._canvas_padding(event.widget)
-        self._seek_and_play(event, audio, pl, pr, self._input_canvases())
-        self.status_var.set("Playing dry...")
-
-    def _canvas_padding(self, widget):
-        if widget in (self.spec_input_canvas, self.spec_output_canvas):
-            return SPEC_PAD_LEFT, SPEC_PAD_RIGHT
-        return WAVE_PAD_LEFT, WAVE_PAD_RIGHT
-
-    def _seek_and_play(self, event, audio, pad_left, pad_right, canvases):
-        w = event.widget.winfo_width()
-        plot_w = w - pad_left - pad_right
-        if plot_w <= 0:
-            return
-        frac = max(0.0, min(1.0, (event.x - pad_left) / plot_w))
-        sample = int(frac * len(audio))
-        sd.stop()
-        sd.default.reset()
-        sd.play(audio[sample:], SR, device=self._output_device_idx)
-        self._start_cursor(audio, canvases)
-        # Adjust start time so cursor begins at the seek position
-        self._playback_start = time.time() - frac * self._playback_length
-
-    def _on_play(self):
-        if self.source_audio is None:
-            messagebox.showwarning("No source", "Load a WAV file first.")
-            return
-        if self.rendering:
-            # Already rendering — don't interrupt, _check_autoplay will
-            # re-render with new params after this one finishes
-            return
-
-        # Always stop previous playback immediately
-        sd.stop()
-        self._stop_cursor()
-
-        params = self._read_params_from_ui()
-        snap = self._params_snapshot(params)
-
-        if self.rendered_audio is not None and self.rendered_params == snap:
-            self._play_audio(np.clip(self.rendered_audio, -1.0, 1.0).astype(np.float32))
-            dur = len(self.rendered_audio) / SR
-            self.status_var.set(f"Playing ({dur:.1f}s){self.rendered_warning}")
-            return
-
-        self._render_and_play(params)
-
-    def _on_play_dry(self):
-        if self.source_audio is None:
-            messagebox.showwarning("No source", "Load a WAV file first.")
-            return
-        sd.stop()
-        self._stop_cursor()
-        audio = self.source_audio.astype(np.float32)
-        sd.default.reset()
-        sd.play(audio, SR, device=self._output_device_idx)
-        self._start_cursor(audio, self._input_canvases())
-        self.status_var.set("Playing dry...")
-
-    def _on_stop(self):
-        if self._autoplay_id is not None:
-            self.root.after_cancel(self._autoplay_id)
-            self._autoplay_id = None
-        sd.stop()
-        self._stop_cursor()
-        self.status_var.set("Stopped")
-
-    def _on_save_wav(self):
-        if self.rendered_audio is None:
-            messagebox.showinfo("Nothing to save", "Press Play first to render.")
-            return
-        path = filedialog.asksaveasfilename(
-            title="Save rendered WAV", initialdir=TEST_SIGNALS_DIR,
-            defaultextension=".wav", filetypes=[("WAV files", "*.wav")])
-        if path:
-            audio = self.rendered_audio.copy()
-            peak = np.max(np.abs(audio))
-            if peak > 0:
-                audio = audio / peak * 0.9
-            wavfile.write(path, SR, (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
-            self.status_var.set(f"Saved: {os.path.basename(path)}")
-
-    # ------------------------------------------------------------------
-    # Presets
-    # ------------------------------------------------------------------
-
-    def _refresh_preset_list(self):
-        self.preset_tree.delete(*self.preset_tree.get_children())
-        self._preset_meta.clear()
-        os.makedirs(PRESET_DIR, exist_ok=True)
-        favorites = self._load_favorites()
-
-        # Read all presets and group by category
-        categories = {}
-        for filename in sorted(os.listdir(PRESET_DIR)):
-            if not filename.endswith(".json") or filename == "favorites.json":
-                continue
-            name = filename[:-5]
-            path = os.path.join(PRESET_DIR, filename)
-            try:
-                with open(path) as fh:
-                    data = json.load(fh)
-            except (json.JSONDecodeError, OSError):
-                continue
-            meta = data.get("_meta", {})
-            cat = meta.get("category", "Uncategorized")
-            desc = meta.get("description", "")
-            self._preset_meta[name] = {"category": cat, "description": desc}
-            categories.setdefault(cat, []).append(name)
-
-        # Filter by search query
-        query = ""
-        if hasattr(self, "_preset_search_var"):
-            query = self._preset_search_var.get().strip().lower()
-
-        def _matches(name):
-            if not query:
-                return True
-            meta = self._preset_meta.get(name, {})
-            return query in name.lower() or query in meta.get("description", "").lower()
-
-        # Favorites group at top (only if any favorites exist among loaded presets)
-        fav_names = sorted(n for n in favorites if n in self._preset_meta and _matches(n))
-        if fav_names:
-            fav_id = self.preset_tree.insert("", "end", text="★ Favorites", open=True,
-                                              values=("", ""))
-            for name in fav_names:
-                desc = self._preset_meta[name].get("description", "")
-                self.preset_tree.insert(fav_id, "end", text=f"★ {name}",
-                                         values=(desc, name))
-
-        # Category display order
-        cat_order = ["Plate", "Room", "Hall", "Ambient", "Modulated",
-                     "Experimental", "Sound Design", "ML Generated",
-                     "Uncategorized"]
-        seen = set()
-        ordered_cats = []
-        for c in cat_order:
-            if c in categories:
-                ordered_cats.append(c)
-                seen.add(c)
-        for c in sorted(categories.keys()):
-            if c not in seen:
-                ordered_cats.append(c)
-
-        for cat in ordered_cats:
-            filtered = [n for n in categories[cat] if _matches(n)]
-            if not filtered:
-                continue
-            cat_id = self.preset_tree.insert("", "end", text=cat, open=True,
-                                              values=("", ""))
-            for name in filtered:
-                desc = self._preset_meta[name].get("description", "")
-                display = f"★ {name}" if name in favorites else name
-                self.preset_tree.insert(cat_id, "end", text=display,
-                                         values=(desc, name))
-
-    def _load_favorites(self):
-        path = os.path.join(PRESET_DIR, "favorites.json")
-        try:
-            with open(path) as fh:
-                return set(json.load(fh))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return set()
-
-    def _save_favorites(self, favorites):
-        path = os.path.join(PRESET_DIR, "favorites.json")
-        os.makedirs(PRESET_DIR, exist_ok=True)
-        with open(path, "w") as fh:
-            json.dump(sorted(favorites), fh, indent=2)
-            fh.write("\n")
-
-    def _on_toggle_favorite(self):
-        name = self._get_selected_preset_name()
-        if not name:
-            return
-        favorites = self._load_favorites()
-        if name in favorites:
-            favorites.discard(name)
-            self.status_var.set(f"Removed from favorites: {name}")
-        else:
-            favorites.add(name)
-            self.status_var.set(f"Added to favorites: {name}")
-        self._save_favorites(favorites)
-        self._refresh_preset_list()
-
-    def _get_selected_preset_name(self):
-        sel = self.preset_tree.selection()
-        if not sel:
-            return None
-        item = sel[0]
-        vals = self.preset_tree.item(item, "values")
-        name = vals[1] if vals and len(vals) > 1 else ""
-        if not name or name not in self._preset_meta:
-            return None
-        return name
-
-    def _on_load_preset(self, play=False):
-        name = self._get_selected_preset_name()
-        if not name:
-            return
-        path = os.path.join(PRESET_DIR, name + ".json")
-        with open(path) as fh:
-            p = json.load(fh)
-        p.pop("_meta", None)
-        full = default_params()
-        full.update(p)
-        self._write_params_to_ui(full)
-        self.status_var.set(f"Loaded preset: {name}")
-        if play:
-            self._on_play()
-
-    def _on_save_preset(self):
-        save_win = tk.Toplevel(self.root)
-        save_win.title("Save Preset")
-        save_win.geometry("360x200")
-        save_win.transient(self.root)
-        save_win.grab_set()
-
-        ttk.Label(save_win, text="Name:").grid(row=0, column=0, sticky="w", padx=8, pady=4)
-        name_var = tk.StringVar()
-        ttk.Entry(save_win, textvariable=name_var, width=30).grid(row=0, column=1, padx=8, pady=4)
-
-        ttk.Label(save_win, text="Category:").grid(row=1, column=0, sticky="w", padx=8, pady=4)
-        cat_var = tk.StringVar(value="Uncategorized")
-        cat_choices = ["Plate", "Room", "Hall", "Ambient", "Modulated",
-                       "Experimental", "Sound Design", "ML Generated"]
-        ttk.Combobox(save_win, textvariable=cat_var, values=cat_choices,
-                     width=28).grid(row=1, column=1, padx=8, pady=4)
-
-        ttk.Label(save_win, text="Description:").grid(row=2, column=0, sticky="nw", padx=8, pady=4)
-        desc_text = tk.Text(save_win, width=30, height=3, wrap="word")
-        desc_text.grid(row=2, column=1, padx=8, pady=4)
-
-        def do_save():
-            n = name_var.get().strip()
-            if not n:
-                return
-            params = self._read_params_from_ui()
-            params["_meta"] = {
-                "category": cat_var.get(),
-                "description": desc_text.get("1.0", "end").strip(),
-            }
-            os.makedirs(PRESET_DIR, exist_ok=True)
-            path = os.path.join(PRESET_DIR, n + ".json")
-            with open(path, "w") as fh:
-                json.dump(params, fh, indent=2)
-                fh.write("\n")
-            self._refresh_preset_list()
-            self.status_var.set(f"Saved preset: {n}")
-            save_win.destroy()
-
-        ttk.Button(save_win, text="Save", command=do_save).grid(
-            row=3, column=1, sticky="e", padx=8, pady=8)
-
-    def _on_delete_preset(self):
-        name = self._get_selected_preset_name()
-        if not name:
-            return
-        path = os.path.join(PRESET_DIR, name + ".json")
-        if os.path.isfile(path):
-            os.remove(path)
-        self._refresh_preset_list()
+    def _build_guide_page(self):
+        parent = self.guide_frame
+        text = tk.Text(parent, wrap="word", bg="#1a1a2e", fg="#cccccc",
+                       font=("Helvetica", 11), padx=20, pady=15,
+                       relief="flat", cursor="arrow", spacing1=2, spacing3=4)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        text.pack(fill="both", expand=True)
+
+        text.tag_configure("h1", font=("Helvetica", 16, "bold"), foreground="#e0e0e0",
+                           spacing1=14, spacing3=6)
+        text.tag_configure("h2", font=("Helvetica", 13, "bold"), foreground="#88aacc",
+                           spacing1=12, spacing3=4)
+        text.tag_configure("h3", font=("Helvetica", 11, "bold"), foreground="#99bbdd",
+                           spacing1=8, spacing3=2)
+        text.tag_configure("param", font=("Helvetica", 11, "bold"), foreground="#ddd8a0")
+        text.tag_configure("body", font=("Helvetica", 11), foreground="#cccccc")
+        text.tag_configure("range", font=("Helvetica", 10), foreground="#888888")
+        text.tag_configure("tip", font=("Helvetica", 10, "italic"), foreground="#7a9a7a")
+        text.tag_configure("warn", font=("Helvetica", 10, "bold"), foreground="#dd6666")
+        text.tag_configure("sep", font=("Helvetica", 4), foreground="#333355")
+
+        def h1(s): text.insert("end", s + "\n", "h1")
+        def h2(s): text.insert("end", "\n", "sep"); text.insert("end", s + "\n", "h2")
+        def h3(s): text.insert("end", s + "\n", "h3")
+        def param(name, rng, desc):
+            text.insert("end", f"  {name}", "param")
+            text.insert("end", f"  ({rng})\n", "range")
+            text.insert("end", f"    {desc}\n\n", "body")
+        def tip(s): text.insert("end", f"    {s}\n", "tip")
+        def warn(s): text.insert("end", f"    {s}\n", "warn")
+        def body(s): text.insert("end", s + "\n\n", "body")
+
+        # ===== CONTENT =====
+        h1("FDN Reverb \u2014 Guide")
+        body("This is an 8-node Feedback Delay Network reverb built from scratch. "
+             "Audio enters the network, passes through 8 parallel delay lines with "
+             "damping filters, and is fed back through a mixing matrix. The result "
+             "is a dense, natural-sounding reverb tail.")
+
+        h2("Top Bar Controls")
+        param("Load WAV", "button", "Load a source audio file (.wav) to process.")
+        param("Play Dry", "button", "Play the original unprocessed audio.")
+        param("Play", "button",
+              "Render the reverb with current settings and play. If settings "
+              "haven't changed since the last render, replays the cached result.")
+        param("Stop", "button", "Stop audio playback.")
+        param("Save WAV", "button",
+              "Export the last rendered output as a 16-bit WAV file.")
+        param("Save Preset", "button",
+              "Save all current parameter values as a named JSON preset.")
+        param("Randomize & Play", "button",
+              "Randomize every parameter (including the matrix) and immediately "
+              "render and play. Great for discovering unexpected sounds.")
+
+        h2("Global Parameters")
+        param("Feedback Gain", "0.0 \u2013 2.0",
+              "Controls how much energy recirculates through the delay network. "
+              "This is the single biggest factor in reverb length.")
+        tip("0.0 = no reverb (single echo).  0.5 = short decay.  "
+            "0.85 = medium room.  0.95+ = long tail.")
+        warn("Values above 1.0 cause the signal to grow each loop \u2014 "
+             "this WILL explode unless Saturation is turned up to tame it.")
+        text.insert("end", "\n", "body")
+
+        param("Wet/Dry Mix", "0.0 \u2013 1.0",
+              "Blend between the original (dry) signal and the reverb (wet) signal.")
+        tip("0.0 = dry only.  0.5 = equal blend.  1.0 = 100% reverb.")
+        text.insert("end", "\n", "body")
+
+        param("Diffusion", "0.0 \u2013 0.7",
+              "Smears the input through a chain of allpass filters before it "
+              "enters the FDN. Softens transients and thickens the early "
+              "reflections. Uses 4 allpass stages internally.")
+        tip("0.0 = bypass (sharp attacks).  0.3 = subtle softening.  "
+            "0.5+ = heavy smearing.")
+        text.insert("end", "\n", "body")
+
+        param("Saturation", "0.0 \u2013 1.0",
+              "Applies tanh soft-clipping inside the feedback loop. At low values "
+              "it adds subtle warmth. At high values it creates distortion, drones, "
+              "and metallic textures. Critically, it prevents explosion when "
+              "Feedback Gain > 1.0.")
+        tip("0.0 = clean/linear (classic FDN).  0.3 = warm.  "
+            "0.7+ = aggressive distortion.")
+        text.insert("end", "\n", "body")
+
+        param("Pre-delay", "0 \u2013 250 ms",
+              "Silence inserted before the reverb tail begins. Simulates the "
+              "time gap between the direct sound and the first reflections "
+              "in a large space.")
+        tip("0\u201310 ms = intimate/close.  20\u201350 ms = medium room.  "
+            "80+ ms = large hall or cathedral.")
+        text.insert("end", "\n", "body")
+
+        param("Tail Length", "0 \u2013 60 s",
+              "How many seconds of silence to append after the input, giving "
+              "the reverb tail time to decay. This only affects offline "
+              "rendering length, not the reverb character itself.")
+        text.insert("end", "\n", "body")
+
+        h2("Feedback Matrix")
+        body("The feedback matrix determines how energy flows between the 8 delay "
+             "lines after each loop. It is the \"shape\" of the reverb's internal "
+             "mixing. Unitary matrices preserve energy (no growth or loss from the "
+             "matrix itself), which is important for stable, natural decay.")
+
+        h3("Matrix Topologies")
+        param("Householder", "unitary",
+              "The standard FDN choice (Jot 1991). Every node feeds equally into "
+              "every other node. Produces smooth, uniform decay. The default.")
+        param("Hadamard", "unitary",
+              "Structured +/\u2212 coupling. Some node pairs add, others subtract. "
+              "Can sound slightly different in high-frequency decay.")
+        param("Diagonal (Identity)", "unitary",
+              "No coupling \u2014 each delay line is independent. Sounds metallic "
+              "and comb-filter-like. Useful for special effects.")
+        param("Random Orthogonal", "unitary",
+              "A random unitary matrix (seeded for reproducibility). Non-uniform "
+              "coupling \u2014 some paths are stronger than others.")
+        param("Circulant", "unitary",
+              "Ring topology: node 0 \u2192 1 \u2192 2 \u2192 ... \u2192 7 \u2192 0. "
+              "Energy travels in a circle. Sparse coupling.")
+        param("Stautner-Puckette", "unitary",
+              "Classic paired cross-coupling (1982). Creates 4 pairs of nodes, "
+              "each rotated by 45\u00b0. Historically used in early digital reverbs.")
+        param("Zero", "NOT unitary",
+              "No feedback at all. Each delay line produces one echo then silence. "
+              "Useful for testing or building comb-filter effects.")
+        param("Custom", "user-editable",
+              "Use the heatmap editor to set arbitrary matrix values. "
+              "Click cells to select, drag to adjust, right-click to zero.")
+
+        h3("Heatmap Controls")
+        param("Click", "heatmap", "Select a cell. Its row/col and value appear below.")
+        param("Drag", "heatmap", "Drag up/down on a selected cell to adjust its value.")
+        param("Right-click", "heatmap", "Zero out a cell.")
+        param("Cell value entry", "text field",
+              "Type an exact value and press Enter to set the selected cell.")
+        param("Snap Unitary", "button",
+              "Project the current matrix to the nearest unitary matrix via SVD. "
+              "Useful after manual edits to restore energy preservation.")
+        param("Use Custom", "button",
+              "Switch to custom matrix mode so the heatmap values are used for rendering.")
+        param("Randomize", "button",
+              "Generate a random 8\u00d78 matrix. If the Unitary checkbox is on, "
+              "projects it to the nearest unitary matrix.")
+
+        h2("XY Pad")
+        body("A 2D controller that maps mouse position to any two global parameters. "
+             "Select which parameter the X and Y axes control using the dropdowns. "
+             "Click or drag on the pad to adjust both parameters simultaneously. "
+             "The crosshair syncs with the sliders in both directions.")
+
+        h2("Modulation (Time-Varying FDN)")
+        body("Modulation adds life and movement to the reverb by continuously varying "
+             "delay times, damping, output gains, and the feedback matrix over time. "
+             "An internal LFO (low-frequency oscillator) drives these changes. The result "
+             "ranges from subtle chorus and spatial drift to alien FM-like textures.")
+
+        h3("Three Timescales")
+        body("Slow (0.01\u20130.5 Hz): The reverb character drifts over several seconds \u2014 "
+             "spatial size, brightness, and density evolve gradually. "
+             "Medium/LFO (0.5\u201320 Hz): Classic chorus and vibrato effects \u2014 "
+             "eliminates metallic ringing from static delay lines. "
+             "Fast/Audio-rate (20+ Hz): Creates FM-like inharmonic sidebands \u2014 "
+             "alien, bell-like, or granular textures.")
+
+        param("Master Rate", "0 \u2013 100 Hz",
+              "The fundamental modulation speed. All per-node LFOs derive their "
+              "rate from this value multiplied by their rate multiplier. "
+              "Set to 0 for static (classic FDN) behavior.")
+        tip("0 = off.  0.1 = slow evolve.  2 = chorus.  80+ = FM territory.")
+        text.insert("end", "\n", "body")
+
+        param("Delay Depth", "0 \u2013 100 samples",
+              "How far the delay times swing around their base values. "
+              "Small values (3\u20135 smp) create subtle chorus. "
+              "Large values (20+ smp) create audible pitch wobble.")
+        text.insert("end", "\n", "body")
+
+        param("Damp Depth", "0.0 \u2013 0.5",
+              "How much the damping coefficients swing. Creates "
+              "time-varying brightness \u2014 the reverb breathes between "
+              "bright and dark.")
+        text.insert("end", "\n", "body")
+
+        param("Out Gain Depth", "0.0 \u2013 1.0",
+              "Modulates output gains per node. Creates tremolo-like "
+              "amplitude variations in the reverb tail.")
+        text.insert("end", "\n", "body")
+
+        param("Matrix Depth", "0.0 \u2013 1.0",
+              "Blends between the primary feedback matrix and a secondary "
+              "matrix (random orthogonal). The energy routing between "
+              "nodes changes over time \u2014 the reverb's internal structure breathes.")
+        text.insert("end", "\n", "body")
+
+        param("Correlation", "0.0 \u2013 1.0",
+              "Controls phase relationships between the 8 per-node LFOs. "
+              "1.0 = all nodes modulate in sync (uniform). "
+              "0.0 = phases spread evenly (maximum decorrelation).")
+        tip("Low correlation creates wider stereo movement and more complex textures.")
+        text.insert("end", "\n", "body")
+
+        param("Mod Waveform", "sine / triangle / sample_hold",
+              "The LFO shape. Sine is smooth and natural. Triangle is "
+              "slightly brighter. Sample-and-hold creates stepped, "
+              "random-sounding modulation.")
+        text.insert("end", "\n", "body")
+
+        param("Rate Multipliers", "0.25 \u2013 4.0 per node",
+              "Each node's LFO rate = master rate \u00d7 its multiplier. "
+              "Use integer ratios (1, 2, 3) for rhythmic relationships "
+              "or non-integer values for more chaotic modulation.")
+        text.insert("end", "\n", "body")
+
+        h2("Per-Node Parameters (8 nodes)")
+        body("Each of the 8 delay lines in the FDN has its own settings. Using "
+             "different values per node (rather than identical values) produces "
+             "denser, more natural reverb because the echo patterns don't "
+             "repeat at a single interval.")
+
+        param("Delay Times", "0.5 \u2013 300 ms",
+              "The delay length for each of the 8 delay lines. These are the "
+              "\"room dimensions\" of the reverb. Short times (< 15 ms) create "
+              "small resonant spaces; long times (50+ ms) create large halls. "
+              "Prime-number-like ratios between the delay times produce the "
+              "densest, least metallic reverb.")
+        tip("Defaults are prime-ish values from 29\u201373 ms (medium room).")
+        text.insert("end", "\n", "body")
+
+        param("Damping", "0.0 \u2013 0.99",
+              "One-pole lowpass filter coefficient per delay line. Higher values "
+              "remove more high frequencies each time the signal passes through "
+              "the loop, simulating absorption by soft surfaces (carpet, curtains).")
+        tip("0.0 = no filtering (bright).  0.3 = warm.  0.7+ = dark/muffled.")
+        text.insert("end", "\n", "body")
+
+        param("Input Gains", "0.0 \u2013 0.5",
+              "How much of the input signal is fed into each delay line. "
+              "Equal gains (default 1/8 = 0.125) distribute the input evenly. "
+              "Unequal gains emphasize certain delay lines over others.")
+        text.insert("end", "\n", "body")
+
+        param("Output Gains", "0.0 \u2013 2.0",
+              "How much each delay line contributes to the final output mix. "
+              "Zeroing a node's output silences it in the output but it still "
+              "participates in feedback. Values > 1.0 amplify that node.")
+        text.insert("end", "\n", "body")
+
+        h2("Presets Tab")
+        body("Save and load parameter snapshots as JSON files. Presets are stored "
+             "in gui/presets/. Select a preset from the list and click Load to "
+             "restore those settings. Use Save As... to create a new preset from "
+             "the current knob positions.")
+
+        h2("Signal Flow Tab")
+        body("A live diagram showing the current signal chain from input to "
+             "output. Updates automatically to reflect parameter values. Shows "
+             "warnings (e.g. feedback > 1.0 with no saturation) and plain-English "
+             "descriptions of the current sound character.")
+
+        h2("Tips & Recipes")
+        h3("Natural Room Reverb")
+        body("Feedback 0.7\u20130.9, damping 0.2\u20130.4, diffusion 0.4\u20130.5, "
+             "Householder matrix, delay times 20\u201380 ms with prime-ish ratios.")
+        h3("Infinite Drone / Shimmer")
+        body("Feedback 1.0\u20131.5, saturation 0.3\u20130.6 (to prevent explosion), "
+             "low damping. The signal sustains indefinitely and distorts gently.")
+        h3("Metallic / Comb Filter")
+        body("Diagonal matrix (no coupling), short delay times (1\u20135 ms), "
+             "high feedback. Each delay line resonates independently.")
+        h3("Gated Reverb")
+        body("Short tail length, high feedback for initial density, "
+             "wet/dry around 0.7. The reverb cuts off abruptly.")
+        h3("Dark Ambient Wash")
+        body("High damping (0.7+), long delay times, feedback 0.9+, "
+             "high diffusion. High frequencies die quickly, leaving a warm pad.")
+
+        text.configure(state="disabled")
 
 
 def main():
     root = tk.Tk()
-    root.geometry("1250x950")
     ReverbGUI(root)
     root.mainloop()
 
