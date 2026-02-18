@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChordSpace</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    /* ─── Toolbar ─── */
+
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #0e0e14;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      flex-wrap: wrap;
+    }
+
+    #toolbar h1 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #666;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-right: 2px;
+    }
+
+    .view-toggle {
+      display: flex;
+      gap: 1px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .view-toggle button {
+      background: transparent;
+      color: #888;
+      border: none;
+      padding: 4px 10px;
+      font-family: inherit;
+      font-size: 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .view-toggle button.active {
+      background: rgba(255,220,100,0.15);
+      color: #ffd764;
+    }
+
+    .view-toggle button:hover:not(.active) {
+      background: rgba(255,255,255,0.05);
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .control-group .label {
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #555;
+    }
+
+    .sep {
+      width: 1px;
+      height: 18px;
+      background: rgba(255,255,255,0.08);
+    }
+
+    select {
+      background: #151520;
+      color: #ccc;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 3px 6px;
+      border-radius: 3px;
+      font-family: inherit;
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    select:focus { outline: 1px solid rgba(255,220,100,0.3); }
+    select:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .random-btn {
+      background: rgba(255,220,100,0.12);
+      color: #ffd764;
+      border: 1px solid rgba(255,220,100,0.25);
+      padding: 4px 12px;
+      border-radius: 3px;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      letter-spacing: 0.5px;
+    }
+
+    .random-btn:hover {
+      background: rgba(255,220,100,0.25);
+    }
+
+    #stats {
+      font-size: 9px;
+      color: #555;
+      margin-left: auto;
+    }
+
+    /* ─── Expandable controls ─── */
+
+    #more-controls {
+      display: none;
+      padding: 4px 12px 6px;
+      background: #0e0e14;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    #more-controls.open {
+      display: flex;
+    }
+
+    .more-toggle {
+      background: none;
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #666;
+      font-family: inherit;
+      font-size: 9px;
+      padding: 3px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    .more-toggle:hover {
+      color: #aaa;
+      border-color: rgba(255,255,255,0.15);
+    }
+
+    .card-filter {
+      font-size: 9px;
+      color: #888;
+      display: flex;
+      align-items: center;
+      gap: 1px;
+      cursor: pointer;
+    }
+
+    .card-filter input {
+      cursor: pointer;
+      width: 12px;
+      height: 12px;
+    }
+
+    /* ─── Canvas area ─── */
+
+    #canvas-wrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background: #0a0a0f;
+    }
+
+    #canvas-wrap canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #constellation { display: block; z-index: 1; }
+    #chordmap      { display: none;  z-index: 0; }
+    #tonnetz       { display: none;  z-index: 0; }
+    #annular       { display: none;  z-index: 0; }
+
+    #hover-info {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      font-size: 13px;
+      color: rgba(255,255,255,0.7);
+      opacity: 0;
+      transition: opacity 0.15s;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* ─── Progression bar (always visible) ─── */
+
+    #prog-bar {
+      background: #0c0c12;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+
+    #prog-chord-row {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 5px 12px 4px;
+      overflow-x: auto;
+      min-height: 46px;
+    }
+
+    #prog-ctrl-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 12px 5px;
+      border-top: 1px solid rgba(255,255,255,0.04);
+      flex-wrap: wrap;
+    }
+
+    .prog-label {
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #444;
+      white-space: nowrap;
+    }
+
+    /* ─── Chord pills ─── */
+
+    .prog-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 4px 5px;
+      background: rgba(255,220,100,0.1);
+      border: 1px solid rgba(255,220,100,0.18);
+      border-radius: 4px;
+      color: #ffd764;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+      transition: background 0.1s, box-shadow 0.1s;
+    }
+
+    .prog-pill:hover { background: rgba(255,220,100,0.18); }
+    .prog-pill.dragging { opacity: 0.35; }
+    .prog-pill.drag-over { box-shadow: -3px 0 0 #ffd764; }
+
+    .drag-handle {
+      color: #555;
+      cursor: grab;
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    .drag-handle:active { cursor: grabbing; }
+
+    .pill-name {
+      font-size: 11px;
+      font-weight: 600;
+      min-width: 28px;
+      max-width: 80px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pill-select {
+      background: rgba(0,0,0,0.5);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #999;
+      font-family: inherit;
+      font-size: 9px;
+      padding: 1px 2px;
+      border-radius: 2px;
+      cursor: pointer;
+      max-width: 36px;
+    }
+
+    .pill-btn {
+      background: none;
+      border: none;
+      color: #555;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0 1px;
+      font-family: inherit;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .pill-btn:hover { color: #ddd; }
+    .pill-btn.rem:hover { color: #ff6b6b; }
+
+    .prog-sep {
+      font-size: 9px;
+      color: #333;
+      white-space: nowrap;
+      flex-shrink: 0;
+      text-align: center;
+      padding: 0 1px;
+      line-height: 1.2;
+    }
+
+    .small-btn {
+      background: rgba(255,255,255,0.06);
+      color: #888;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-family: inherit;
+      font-size: 9px;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .small-btn:hover {
+      background: rgba(255,255,255,0.1);
+      color: #ccc;
+    }
+
+
+    /* ─── Sidebar ─── */
+
+    #sidebar {
+      width: 240px;
+      background: #0e0e14;
+      border-left: 1px solid rgba(255,255,255,0.06);
+      padding: 10px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .section-label {
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #555;
+      margin-bottom: 2px;
+    }
+
+    #chord-name {
+      font-size: 18px;
+      font-weight: 700;
+      color: #ffd764;
+      letter-spacing: 1px;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      padding: 2px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+
+    .info-row .label { color: #666; }
+
+    .consonance-bar {
+      height: 3px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 2px;
+      margin-top: 3px;
+      overflow: hidden;
+    }
+
+    .consonance-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s, background 0.3s;
+    }
+
+    .hint-text {
+      font-size: 10px;
+      color: #444;
+      font-style: italic;
+    }
+
+    /* ─── Neighbors ─── */
+
+    .neighbor-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      padding: 3px 6px;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-bottom: 2px;
+    }
+
+    .neighbor-item:hover {
+      background: rgba(255,255,255,0.06);
+    }
+
+    .neighbor-item small {
+      color: #555;
+      font-size: 9px;
+    }
+
+    /* ─── Synth macros ─── */
+
+    .macro-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .macro-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .macro-label {
+      font-size: 8px;
+      color: #666;
+      width: 36px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .macro-val {
+      font-size: 8px;
+      color: #555;
+      width: 26px;
+      text-align: right;
+    }
+
+    .macro-row input[type="range"] {
+      flex: 1;
+      height: 3px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255,255,255,0.08);
+      border-radius: 2px;
+      cursor: pointer;
+    }
+
+    .macro-row input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ffd764;
+      cursor: pointer;
+    }
+
+    /* ─── Search ─── */
+
+    #search-input {
+      width: 100%;
+      background: #151520;
+      color: #ccc;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 4px 6px;
+      border-radius: 3px;
+      font-family: inherit;
+      font-size: 10px;
+      cursor: text;
+    }
+
+    #search-input:focus { outline: 1px solid rgba(255,220,100,0.3); }
+    #search-input::placeholder { color: #444; }
+
+    /* ─── Search dropdown ─── */
+
+    .search-wrap { position: relative; }
+
+    #search-dropdown {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: #111118;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-top: none;
+      border-radius: 0 0 4px 4px;
+      max-height: 260px;
+      overflow-y: auto;
+      z-index: 100;
+    }
+
+    #search-dropdown.open { display: block; }
+
+    .search-result {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 8px;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      transition: background 0.1s;
+    }
+
+    .search-result:hover { background: rgba(255,255,255,0.06); }
+    .search-result.focused { background: rgba(255,220,100,0.1); }
+
+    .search-result-name {
+      font-size: 11px;
+      color: #ddd;
+      font-weight: 600;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .search-result-also {
+      font-size: 9px;
+      color: #555;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 90px;
+    }
+
+    .search-result-btns {
+      display: flex;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+
+    .sr-btn {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 2px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.05);
+      color: #888;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .sr-btn:hover { background: rgba(255,220,100,0.15); color: #ffd764; border-color: rgba(255,220,100,0.3); }
+    .sr-btn.add { color: #4ecdc4; border-color: rgba(78,205,196,0.3); }
+    .sr-btn.add:hover { background: rgba(78,205,196,0.15); color: #4ecdc4; }
+
+    /* ─── Scope ─── */
+
+    #scope-canvas { display: block; }
+
+    /* ─── Legend ─── */
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 9px;
+      color: #666;
+    }
+
+    .legend-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+    }
+
+    .help-section {
+      font-size: 9px;
+      color: #444;
+      line-height: 1.5;
+    }
+
+    .help-section kbd {
+      background: #1a1a25;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 2px;
+      padding: 0px 3px;
+      font-size: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="main">
+    <!-- Primary toolbar -->
+    <div id="toolbar">
+      <h1>ChordSpace</h1>
+
+      <div class="view-toggle">
+        <button id="btn-constellation" class="active">Explore</button>
+        <button id="btn-map">Map</button>
+        <button id="btn-tonnetz">Tonnetz</button>
+        <button id="btn-annular">Annular</button>
+      </div>
+
+      <div class="sep"></div>
+
+      <div class="control-group">
+        <span class="label">Key</span>
+        <select id="key-root">
+          <option value="none">Any</option>
+          <option value="0">C</option>
+          <option value="1">C#</option>
+          <option value="2">D</option>
+          <option value="3">Eb</option>
+          <option value="4">E</option>
+          <option value="5">F</option>
+          <option value="6">F#</option>
+          <option value="7">G</option>
+          <option value="8">Ab</option>
+          <option value="9">A</option>
+          <option value="10">Bb</option>
+          <option value="11">B</option>
+        </select>
+        <select id="key-scale">
+          <option value="major">Major</option>
+          <option value="minor">Minor</option>
+          <option value="dorian">Dorian</option>
+          <option value="mixolydian">Mixolydian</option>
+          <option value="lydian">Lydian</option>
+          <option value="phrygian">Phrygian</option>
+          <option value="harmmin">Harm Min</option>
+          <option value="melmin">Mel Min</option>
+          <option value="pentatonic">Pentatonic</option>
+          <option value="blues">Blues</option>
+          <option value="wholetone">Whole Tone</option>
+          <option value="chromatic">Chromatic</option>
+        </select>
+      </div>
+
+      <div class="sep"></div>
+
+      <div class="control-group">
+        <span class="label">Tuning</span>
+        <div class="view-toggle" id="tuning-toggle">
+          <button id="btn-tet" class="active" title="Equal temperament — all semitones equal">12-TET</button>
+          <button id="btn-just" title="5-limit just intonation — pure harmonic ratios above bass">Just</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <span class="label">Synth</span>
+        <select id="synth-method">
+          <option value="additive">Additive</option>
+          <option value="wavetable">Wavetable</option>
+          <option value="subtractive">Subtractive</option>
+          <option value="fm">FM</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <span class="label">Timbre</span>
+        <select id="timbre-select"></select>
+      </div>
+
+      <button id="random-btn" class="random-btn">Random</button>
+
+      <button class="more-toggle" id="more-toggle">more</button>
+
+      <span id="stats"></span>
+    </div>
+
+    <!-- Expandable secondary controls -->
+    <div id="more-controls">
+      <span class="label" style="color:#444;letter-spacing:1.5px">Canvas</span>
+
+      <div class="control-group">
+        <span class="label">Data Set</span>
+        <select id="view-mode" title="Affects Map/Annular/Tonnetz only — disabled in Explore">
+          <option value="named">Named chords</option>
+          <option value="all-classes">Forte classes (224)</option>
+          <option value="all-pcs">All PCS (2-7 notes)</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <span class="label" title="Filter by chord root pitch class">Root</span>
+        <select id="root-filter">
+          <option value="all">All</option>
+          <option value="0">C</option>
+          <option value="1">C#</option>
+          <option value="2">D</option>
+          <option value="3">Eb</option>
+          <option value="4">E</option>
+          <option value="5">F</option>
+          <option value="6">F#</option>
+          <option value="7">G</option>
+          <option value="8">Ab</option>
+          <option value="9">A</option>
+          <option value="10">Bb</option>
+          <option value="11">B</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <span class="label">Notes</span>
+        <div id="card-filters"></div>
+      </div>
+
+      <div class="sep"></div>
+
+      <span class="label" style="color:#444;letter-spacing:1.5px">Playback</span>
+
+      <div class="control-group">
+        <span class="label">Voice</span>
+        <select id="voicing-type">
+          <option value="close">Close</option>
+          <option value="drop2">Drop 2</option>
+          <option value="shell">Shell</option>
+          <option value="spread">Spread</option>
+          <option value="rootlessA">Rootless A</option>
+          <option value="rootlessB">Rootless B</option>
+          <option value="quartal">Quartal</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <span class="label">Inv</span>
+        <select id="inversion">
+          <option value="0">Root</option>
+          <option value="1">1st</option>
+          <option value="2">2nd</option>
+          <option value="3">3rd</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="card-filter"><input type="checkbox" id="register-constraints"> <span style="font-size:8px;color:#666;text-transform:uppercase">Register</span></label>
+      </div>
+    </div>
+
+    <div id="canvas-wrap">
+      <canvas id="constellation"></canvas>
+      <canvas id="chordmap"></canvas>
+      <canvas id="tonnetz"></canvas>
+      <canvas id="annular"></canvas>
+      <div id="hover-info"></div>
+    </div>
+
+    <!-- Always-visible progression bar -->
+    <div id="prog-bar">
+      <div id="prog-chord-row">
+        <span class="prog-label" style="margin-right:4px">Prog</span>
+        <div id="progression-list" style="display:contents"></div>
+      </div>
+      <div id="prog-ctrl-row">
+        <span class="prog-label">Arp</span>
+        <select id="arp-mode" style="font-size:9px;padding:2px 4px;background:#151520;color:#ccc;border:1px solid rgba(255,255,255,0.1);border-radius:3px;font-family:inherit">
+          <option value="off">Off</option>
+          <option value="up">Up ↑</option>
+          <option value="down">Down ↓</option>
+          <option value="updown">Up↓Down</option>
+          <option value="random">Random</option>
+        </select>
+        <select id="arp-rate" style="font-size:9px;padding:2px 4px;background:#151520;color:#ccc;border:1px solid rgba(255,255,255,0.1);border-radius:3px;font-family:inherit">
+          <option value="0.25">16th</option>
+          <option value="0.5" selected>8th</option>
+          <option value="1">Quarter</option>
+          <option value="2">Half</option>
+        </select>
+        <span class="prog-label">Gate</span>
+        <input type="range" id="arp-gate" min="0.1" max="1" step="0.05" value="0.75" style="width:50px;height:3px;cursor:pointer">
+        <span id="arp-gate-val" style="font-size:8px;color:#555;width:26px">75%</span>
+
+        <div class="sep"></div>
+
+        <span style="font-size:8px;color:#555">BPM</span>
+        <input type="number" id="prog-tempo" value="100" min="40" max="240" style="width:42px;background:#151520;color:#ccc;border:1px solid rgba(255,255,255,0.1);border-radius:3px;font-family:inherit;font-size:10px;padding:2px 4px">
+        <label class="card-filter"><input type="checkbox" id="prog-loop"> <span style="font-size:8px;color:#666">Loop</span></label>
+        <button id="play-prog" class="small-btn">Play</button>
+        <button id="clear-prog" class="small-btn">Clear</button>
+        <button id="midi-export" class="small-btn">MIDI</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div class="search-wrap">
+      <div class="section-label">Search</div>
+      <input type="text" id="search-input" placeholder="Cmaj7, dim7, C E G..." autocomplete="off">
+      <div id="search-dropdown"></div>
+    </div>
+
+    <div>
+      <div class="section-label">Active Chord</div>
+      <div id="chord-name">Click a chord to begin</div>
+    </div>
+
+    <div id="chord-info">
+      <div class="hint-text">Select a chord on any view to see details</div>
+    </div>
+
+    <div>
+      <div class="section-label">Nearest by Voice Leading</div>
+      <div id="neighbors-list"></div>
+    </div>
+
+    <div>
+      <div class="section-label">Synth Macros</div>
+      <div class="macro-controls">
+        <div class="macro-row"><span class="macro-label">Bright</span><input type="range" id="macro-brightness" min="0" max="1" step="0.01" value="0.5"><span id="macro-brightness-val" class="macro-val">0.50</span></div>
+        <div class="macro-row"><span class="macro-label">Warm</span><input type="range" id="macro-warmth" min="0" max="1" step="0.01" value="0.5"><span id="macro-warmth-val" class="macro-val">0.50</span></div>
+        <div class="macro-row"><span class="macro-label">Attack</span><input type="range" id="macro-attack" min="0" max="1" step="0.01" value="0.3"><span id="macro-attack-val" class="macro-val">0.30</span></div>
+        <div class="macro-row"><span class="macro-label">Body</span><input type="range" id="macro-body" min="0" max="1" step="0.01" value="0.5"><span id="macro-body-val" class="macro-val">0.50</span></div>
+        <div class="macro-row"><span class="macro-label">Air</span><input type="range" id="macro-air" min="0" max="1" step="0.01" value="0.3"><span id="macro-air-val" class="macro-val">0.30</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Scope</div>
+      <canvas id="scope-canvas" width="220" height="100" style="width: 220px; height: 100px; border-radius: 4px; background: #0a0a0f;"></canvas>
+    </div>
+
+    <div>
+      <div class="section-label">Legend</div>
+      <div class="legend">
+        <div class="legend-item"><span class="legend-dot" style="background: #ff6b6b"></span>2</div>
+        <div class="legend-item"><span class="legend-dot" style="background: #ffd764"></span>3</div>
+        <div class="legend-item"><span class="legend-dot" style="background: #4ecdc4"></span>4</div>
+        <div class="legend-item"><span class="legend-dot" style="background: #45b7d1"></span>5</div>
+        <div class="legend-item"><span class="legend-dot" style="background: #a78bfa"></span>6</div>
+        <div class="legend-item"><span class="legend-dot" style="background: #f472b6"></span>7</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Controls</div>
+      <div class="help-section">
+        <kbd>Click</kbd> hear chord / navigate<br>
+        <kbd>Right-click</kbd> add to progression<br>
+        <kbd>Scroll</kbd> zoom (Map)<br>
+        <kbd>Drag</kbd> pan (Map)
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="dist/app.js"></script>
+</body>
+</html>
