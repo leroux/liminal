@@ -609,6 +609,10 @@ function switchView(view: 'constellation' | 'map' | 'tonnetz' | 'annular'): void
   // Disable "Data Set" dropdown in Explore (it has no effect there)
   const viewModeEl = document.getElementById('view-mode') as HTMLSelectElement;
   viewModeEl.disabled = (view === 'constellation');
+
+  // Show/hide Explore-specific controls
+  const exploreControls = document.getElementById('explore-controls')!;
+  exploreControls.style.display = view === 'constellation' ? 'flex' : 'none';
 }
 
 // ─── Control wiring ─────────────────────────────────────────────────
@@ -619,6 +623,17 @@ function wireControls(): void {
   document.getElementById('btn-map')!.addEventListener('click', () => switchView('map'));
   document.getElementById('btn-tonnetz')!.addEventListener('click', () => switchView('tonnetz'));
   document.getElementById('btn-annular')!.addEventListener('click', () => switchView('annular'));
+
+  // Explore: Lock and Help buttons
+  document.getElementById('explore-lock')!.addEventListener('click', () => {
+    const locked = !constellation.isLocked();
+    constellation.setLocked(locked);
+    document.getElementById('explore-lock')!.classList.toggle('active', locked);
+  });
+  document.getElementById('explore-help')!.addEventListener('click', () => {
+    constellation.toggleHelp();
+    document.getElementById('explore-help')!.classList.toggle('active');
+  });
 
   // Random button
   document.getElementById('random-btn')!.addEventListener('click', () => {
