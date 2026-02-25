@@ -14,6 +14,7 @@
 BUNDLE  := target/bundled
 LOSSY   := lossy-plugin
 FRACTAL := fractal-plugin
+REVERB  := reverb-plugin
 
 # macOS plugin install dirs
 VST3_DIR := $(HOME)/Library/Audio/Plug-Ins/VST3
@@ -21,6 +22,7 @@ CLAP_DIR := $(HOME)/Library/Audio/Plug-Ins/CLAP
 
 .PHONY: all release debug install uninstall run clean \
         fractal install-fractal uninstall-fractal run-fractal \
+        reverb install-reverb uninstall-reverb run-reverb \
         all-plugins install-all
 
 all: release
@@ -75,10 +77,35 @@ uninstall-fractal:
 run-fractal: fractal
 	cargo run --release --bin fractal-standalone
 
-# --- Both ---
-all-plugins: release fractal
+# --- Reverb ---
+reverb:
+	cargo xtask bundle $(REVERB) --release
 
-install-all: install install-fractal
+reverb-debug:
+	cargo xtask bundle $(REVERB)
+
+install-reverb: reverb
+	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
+	@echo "Installing VST3 → $(VST3_DIR)"
+	@rm -rf "$(VST3_DIR)/$(REVERB).vst3"
+	@cp -r "$(BUNDLE)/$(REVERB).vst3" "$(VST3_DIR)/"
+	@echo "Installing CLAP → $(CLAP_DIR)"
+	@rm -rf "$(CLAP_DIR)/$(REVERB).clap"
+	@cp -r "$(BUNDLE)/$(REVERB).clap" "$(CLAP_DIR)/"
+	@echo "Done. Restart your DAW to pick up changes."
+
+uninstall-reverb:
+	rm -rf "$(VST3_DIR)/$(REVERB).vst3"
+	rm -rf "$(CLAP_DIR)/$(REVERB).clap"
+	@echo "Removed reverb plugins. Restart your DAW."
+
+run-reverb: reverb
+	cargo run --release --bin reverb-standalone
+
+# --- All ---
+all-plugins: release fractal reverb
+
+install-all: install install-fractal install-reverb
 
 clean:
 	cargo clean

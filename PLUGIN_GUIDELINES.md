@@ -12,7 +12,7 @@ Every plugin has three layers:
 
 Plus a **PyO3 bindings crate** (`rust/crates/<name>-python/`) bridging Rust DSP to Python.
 
-**Exception:** reverb is Python/Numba only (no Rust backend yet).
+All three plugins (reverb, lossy, fractal) follow this pattern.
 
 ## Key Conventions
 
