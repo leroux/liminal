@@ -1,0 +1,22 @@
+[package]
+name = "reverb-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "reverb-standalone"
+path = "src/main.rs"
+
+[dependencies]
+reverb-dsp = { path = "../reverb-dsp" }
+shared-dsp = { path = "../shared-dsp" }
+nih_plug.workspace = true
+nih_plug_egui.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.24.0"
+objc = "0.2.7"

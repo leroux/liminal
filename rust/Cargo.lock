@@ -2416,6 +2416,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "reverb-plugin"
+version = "0.1.0"
+dependencies = [
+ "cocoa",
+ "nih_plug",
+ "nih_plug_egui",
+ "objc",
+ "reverb-dsp",
+ "serde_json",
+ "shared-dsp",
+]
+
+[[package]]
 name = "reverb-python"
 version = "0.1.0"
 dependencies = [
