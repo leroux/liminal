@@ -290,34 +290,49 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
     let fft = planner.plan_fft_forward(window_size);
     let ifft = planner.plan_fft_inverse(window_size);
 
-    // Process each frame
+    // Pre-allocate per-frame buffers (reused across all frames)
+    let mut frame = vec![0.0_f64; window_size];
+    let mut spectrum = vec![Complex64::new(0.0, 0.0); num_bins];
+    let mut mag = vec![0.0_f64; num_bins];
+    let mut orig_mag = vec![0.0_f64; num_bins];
+    let mut phase = vec![0.0_f64; num_bins];
+    let mut time_buf = vec![0.0_f64; window_size];
+
+    // Pre-allocate compressed buffers for each scale
+    let mut compressed_bufs: Vec<Vec<f64>> = (1..num_scales)
+        .map(|s| {
+            let cl = (num_bins as f64 * scale_ratio.powi(s)).max(1.0) as usize;
+            vec![0.0_f64; cl]
+        })
+        .collect();
+
     let mut output = vec![0.0_f64; n.max(window_size + (num_frames - 1) * hop_size)];
 
     for fi in 0..num_frames {
         let start = fi * hop_size;
 
         // Window the frame
-        let mut frame = vec![0.0_f64; window_size];
         for i in 0..window_size {
             frame[i] = x[start + i] * window[i];
         }
 
         // Forward FFT
-        let mut spectrum = vec![Complex64::new(0.0, 0.0); num_bins];
         fft.process(&mut frame, &mut spectrum).unwrap();
 
         // Extract magnitude and phase
-        let mut mag: Vec<f64> = spectrum.iter().map(|c| c.norm()).collect();
-        let phase: Vec<f64> = spectrum.iter().map(|c| c.arg()).collect();
-        let orig_mag = mag.clone();
+        for i in 0..num_bins {
+            mag[i] = spectrum[i].norm();
+            orig_mag[i] = mag[i];
+            phase[i] = spectrum[i].arg();
+        }
 
         // Fractalize magnitude
-        for s in 1..num_scales {
-            let compressed_len = (num_bins as f64 * scale_ratio.powi(s)).max(1.0) as usize;
+        for (si, s) in (1..num_scales).enumerate() {
+            let compressed = &mut compressed_bufs[si];
+            let compressed_len = compressed.len();
             let gain = amplitude_decay.powi(s);
 
             // Downsample magnitude via linear interpolation
-            let mut compressed = vec![0.0_f64; compressed_len];
             for i in 0..compressed_len {
                 let pos = if compressed_len <= 1 {
                     0.0
@@ -336,23 +351,18 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
             }
         }
 
-        // Reconstruct complex spectrum
-        let mut recon: Vec<Complex64> = mag
-            .iter()
-            .zip(phase.iter())
-            .map(|(&m, &p)| Complex64::from_polar(m, p))
-            .collect();
-
-        // realfft requires DC and Nyquist bins to be purely real
-        recon[0] = Complex64::new(recon[0].re, 0.0);
+        // Reconstruct complex spectrum in-place
+        for i in 0..num_bins {
+            spectrum[i] = Complex64::from_polar(mag[i], phase[i]);
+        }
+        spectrum[0] = Complex64::new(spectrum[0].re, 0.0);
         if num_bins > 1 {
             let last = num_bins - 1;
-            recon[last] = Complex64::new(recon[last].re, 0.0);
+            spectrum[last] = Complex64::new(spectrum[last].re, 0.0);
         }
 
         // Inverse FFT
-        let mut time_buf = vec![0.0_f64; window_size];
-        ifft.process(&mut recon, &mut time_buf).unwrap();
+        ifft.process(&mut spectrum, &mut time_buf).unwrap();
 
         // Apply window and normalize (realfft scales by N)
         let inv_n = 1.0 / window_size as f64;
@@ -398,18 +408,23 @@ pub fn render_fractal_core(samples: &[f64], params: &FractalParams) -> Vec<f64> 
     let layer_delay = params.layer_delay.clamp(0.0, 1.0);
     let layer_tilt = params.layer_tilt;
     let num_scales = params.num_scales.clamp(2, 8);
+    let n = samples.len();
 
     let mut current = samples.to_vec();
+    // Pre-allocate a scratch buffer for summing layers (reused across iterations)
+    let mut sum_buf = vec![0.0_f64; n];
 
     for it in 0..iterations {
         // Time-domain fractalization via per-layer approach
-        let time_out = if spectral_blend < 1.0 {
+        let has_time = spectral_blend < 1.0;
+        let has_spec = spectral_blend > 0.0;
+
+        if has_time {
             let mut layers = fractalize_time_layers(&current, params);
-            let n = current.len();
 
             // Apply per-layer delay (feature 5)
             if layer_delay > 0.0 {
-                let max_delay = (n as f64 * 0.1) as usize; // up to 10% of buffer
+                let max_delay = (n as f64 * 0.1) as usize;
                 for (s, layer) in layers.iter_mut().enumerate() {
                     if s == 0 {
                         continue;
@@ -427,52 +442,43 @@ pub fn render_fractal_core(samples: &[f64], params: &FractalParams) -> Vec<f64> 
                 }
             }
 
-            // Sum all layers
-            let mut sum = vec![0.0_f64; n];
+            // Sum all layers into sum_buf
+            sum_buf[..n].fill(0.0);
             for layer in &layers {
                 for (i, &v) in layer.iter().enumerate() {
-                    sum[i] += v;
+                    sum_buf[i] += v;
                 }
             }
 
-            normalize_to_input_peak(&current, sum)
-        } else {
-            current.clone()
-        };
+            normalize_to_input_peak_inplace(&current, &mut sum_buf[..n]);
 
-        // Spectral-domain fractalization
-        let spec_out = if spectral_blend > 0.0 {
-            fractalize_spectral(&current, params)
+            if !has_spec {
+                // Pure time-domain: swap sum_buf into current
+                current.copy_from_slice(&sum_buf[..n]);
+            } else {
+                // Need to blend with spectral — compute spectral, then blend in-place
+                let spec_out = fractalize_spectral(&current, params);
+                for i in 0..n {
+                    current[i] = (1.0 - spectral_blend) * sum_buf[i] + spectral_blend * spec_out[i];
+                }
+            }
         } else {
-            current.clone()
-        };
-
-        // Blend
-        let mut result = if spectral_blend <= 0.0 {
-            time_out
-        } else if spectral_blend >= 1.0 {
-            spec_out
-        } else {
-            time_out
-                .iter()
-                .zip(spec_out.iter())
-                .map(|(&t, &s)| (1.0 - spectral_blend) * t + spectral_blend * s)
-                .collect()
-        };
+            // Pure spectral
+            let spec_out = fractalize_spectral(&current, params);
+            current.copy_from_slice(&spec_out[..n]);
+        }
 
         // Apply saturation between iterations
         if saturation > 0.0 {
-            apply_saturation(&mut result, saturation);
+            apply_saturation(&mut current, saturation);
         }
 
         // Apply iteration decay for subsequent passes
         if it < iterations - 1 {
-            for s in result.iter_mut() {
+            for s in current.iter_mut() {
                 *s *= iter_decay;
             }
         }
-
-        current = result;
     }
 
     current

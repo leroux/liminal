@@ -7,12 +7,15 @@
 //!           -> Crush/Decimate -> Post-Filter -> Gate -> Limiter -> Mix -> Output
 
 use crate::core::{render_fractal_core, render_fractal_core_stereo};
-use crate::filters::{apply_post_filter, apply_pre_filter, crush_and_decimate, limiter, noise_gate};
+use crate::filters::{
+    apply_post_filter_inplace, apply_pre_filter, crush_and_decimate_inplace, limiter_inplace,
+    noise_gate_inplace,
+};
 use crate::params::{param_range, FractalParams, BOUNCE_TARGETS, SR};
 
 /// Core signal chain without bounce modulation.
 fn render_chain(dry: &[f64], params: &FractalParams) -> Vec<f64> {
-    // 1) Pre-filter
+    // 1) Pre-filter (returns new Vec or clone)
     let mut wet = apply_pre_filter(dry, params);
 
     // 2) Fractalize (core algorithm with iterations)
@@ -27,17 +30,17 @@ fn render_chain(dry: &[f64], params: &FractalParams) -> Vec<f64> {
         }
     }
 
-    // 4) Bitcrusher + sample rate reducer
-    wet = crush_and_decimate(&wet, params);
+    // 4) Bitcrusher + sample rate reducer (in-place)
+    crush_and_decimate_inplace(&mut wet, params);
 
-    // 5) Post-filter
-    wet = apply_post_filter(&wet, params);
+    // 5) Post-filter (in-place)
+    apply_post_filter_inplace(&mut wet, params);
 
-    // 6) Noise gate
-    wet = noise_gate(&wet, params);
+    // 6) Noise gate (in-place)
+    noise_gate_inplace(&mut wet, params);
 
-    // 7) Limiter
-    wet = limiter(&wet, params);
+    // 7) Limiter (in-place)
+    limiter_inplace(&mut wet, params);
 
     wet
 }
@@ -176,15 +179,15 @@ fn render_stereo_chain(left: &[f64], right: &[f64], params: &FractalParams) -> (
         }
     }
 
-    // 4-7) Crush, post-filter, gate, limiter per channel
-    out_l = crush_and_decimate(&out_l, params);
-    out_r = crush_and_decimate(&out_r, params);
-    out_l = apply_post_filter(&out_l, params);
-    out_r = apply_post_filter(&out_r, params);
-    out_l = noise_gate(&out_l, params);
-    out_r = noise_gate(&out_r, params);
-    out_l = limiter(&out_l, params);
-    out_r = limiter(&out_r, params);
+    // 4-7) Crush, post-filter, gate, limiter per channel (in-place)
+    crush_and_decimate_inplace(&mut out_l, params);
+    crush_and_decimate_inplace(&mut out_r, params);
+    apply_post_filter_inplace(&mut out_l, params);
+    apply_post_filter_inplace(&mut out_r, params);
+    noise_gate_inplace(&mut out_l, params);
+    noise_gate_inplace(&mut out_r, params);
+    limiter_inplace(&mut out_l, params);
+    limiter_inplace(&mut out_r, params);
 
     (out_l, out_r)
 }
