@@ -86,6 +86,25 @@ pub fn apply_pre_filter(audio: &[f64], params: &FractalParams) -> Vec<f64> {
     biquad_process(audio, &coeffs)
 }
 
+/// Apply pre-fractal filter in-place.
+pub fn apply_pre_filter_inplace(audio: &mut [f64], params: &FractalParams) {
+    if params.filter_type == 0 {
+        return;
+    }
+
+    let freq = params.filter_freq.clamp(20.0, SR / 2.0 - 1.0);
+    let q = params.filter_q.max(0.1);
+    let c = compute_biquad_coeffs(params.filter_type, freq, q);
+    let mut w1 = 0.0_f64;
+    let mut w2 = 0.0_f64;
+    for s in audio.iter_mut() {
+        let w0 = *s - c.a1 * w1 - c.a2 * w2;
+        *s = c.b0 * w0 + c.b1 * w1 + c.b2 * w2;
+        w2 = w1;
+        w1 = w0;
+    }
+}
+
 /// Apply post-fractal filter.
 pub fn apply_post_filter(audio: &[f64], params: &FractalParams) -> Vec<f64> {
     if params.post_filter_type == 0 {

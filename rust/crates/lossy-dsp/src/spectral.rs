@@ -103,6 +103,16 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
     let mut spectrum = vec![Complex::new(0.0, 0.0); n_bins];
     let mut ifft_output = vec![0.0_f64; window_size];
 
+    // Pre-allocate per-frame buffers (eliminates per-frame Vec allocations)
+    let mut magnitudes = vec![0.0_f64; n_bins];
+    let mut phases = vec![0.0_f64; n_bins];
+    let mut proc_mag = vec![0.0_f64; n_bins];
+    let mut compressed = vec![0.0_f64; n_bins];
+    let mut band_energy = vec![0.0_f64; n_bands];
+    let mut envelope = vec![0.0_f64; n_bins];
+    let mut inv_env = vec![0.0_f64; n_bins];
+    let mut shaped = vec![0.0_f64; n_bins];
+
     let mut frozen_spectrum: Option<Vec<f64>> = None;
 
     for fi in 0..n_frames {
@@ -116,9 +126,11 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         // Forward FFT
         fft.process(&mut fft_input, &mut spectrum).unwrap();
 
-        // Extract magnitude and phase
-        let magnitudes: Vec<f64> = spectrum.iter().map(|c| c.norm()).collect();
-        let mut phases: Vec<f64> = spectrum.iter().map(|c| c.arg()).collect();
+        // Extract magnitude and phase (in-place into pre-allocated buffers)
+        for i in 0..n_bins {
+            magnitudes[i] = spectrum[i].norm();
+            phases[i] = spectrum[i].arg();
+        }
 
         // Pre-echo: boost loss for frames right before a transient
         let mut frame_loss = loss;
@@ -129,9 +141,15 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         }
 
         // ---------- magnitude processing ----------
-        let mut proc_mag = if frame_loss > 0.0 {
-            standard_degrade(
-                &magnitudes,
+        if frame_loss > 0.0 {
+            standard_degrade_inplace(
+                &magnitudes[..n_bins],
+                &mut proc_mag[..n_bins],
+                &mut compressed[..n_bins],
+                &mut band_energy[..n_bands],
+                &mut envelope[..n_bins],
+                &mut inv_env[..n_bins],
+                &mut shaped[..n_bins],
                 frame_loss,
                 &mut rng,
                 &band_edges,
@@ -140,13 +158,13 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
                 quantizer_type,
                 noise_shape,
                 weighting,
-            )
+            );
         } else {
-            magnitudes.clone()
-        };
+            proc_mag[..n_bins].copy_from_slice(&magnitudes[..n_bins]);
+        }
 
         if inverse {
-            for i in 0..proc_mag.len() {
+            for i in 0..n_bins {
                 proc_mag[i] = (magnitudes[i] - proc_mag[i]).max(0.0);
             }
         }
@@ -155,13 +173,13 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         if phase_loss > 0.0 {
             let n_levels = (64.0 * (1.0 - phase_loss)).max(4.0) as i32;
             let step = 2.0 * std::f64::consts::PI / n_levels as f64;
-            for p in phases.iter_mut() {
+            for p in phases[..n_bins].iter_mut() {
                 *p = step * (*p / step).round();
             }
         }
         if jitter > 0.0 {
             let pi = std::f64::consts::PI;
-            for p in phases.iter_mut() {
+            for p in phases[..n_bins].iter_mut() {
                 let noise = rng.uniform(-pi, pi) * jitter;
                 *p += noise;
             }
@@ -176,7 +194,7 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
                 1.0
             };
             let mult = ((1.0 - (frame_loss - hf_threshold) / hf_range).max(0.0)).min(1.0);
-            for i in cutoff..proc_mag.len() {
+            for i in cutoff..n_bins {
                 proc_mag[i] *= mult;
             }
         }
@@ -184,21 +202,18 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         // ---------- freeze ----------
         if freeze {
             if frozen_spectrum.is_none() {
-                frozen_spectrum = Some(proc_mag.clone());
+                frozen_spectrum = Some(proc_mag[..n_bins].to_vec());
             }
             let frozen = frozen_spectrum.as_mut().unwrap();
-            if freeze_mode == 1 {
-                // Solid: use frozen spectrum directly
-                // frozen_spectrum stays unchanged
-            } else {
+            if freeze_mode != 1 {
                 // Slushy: drift frozen spectrum toward live signal
-                for i in 0..frozen.len() {
+                for i in 0..n_bins.min(frozen.len()) {
                     frozen[i] = (1.0 - slushy_rate_param) * frozen[i]
                         + slushy_rate_param * proc_mag[i];
                 }
             }
             // Blend
-            for i in 0..proc_mag.len() {
+            for i in 0..n_bins.min(frozen.len()) {
                 proc_mag[i] =
                     freezer_blend * frozen[i] + (1.0 - freezer_blend) * proc_mag[i];
             }
@@ -339,8 +354,15 @@ fn compute_ath_weights(
 }
 
 /// Standard mode: quantization + psychoacoustic band gating.
-fn standard_degrade(
+/// All scratch buffers are pre-allocated by the caller.
+fn standard_degrade_inplace(
     magnitudes: &[f64],
+    proc: &mut [f64],
+    compressed: &mut [f64],
+    band_energy: &mut [f64],
+    envelope: &mut [f64],
+    inv_env: &mut [f64],
+    shaped: &mut [f64],
     loss: f64,
     rng: &mut NumpyRng,
     band_edges: &[usize],
@@ -349,81 +371,80 @@ fn standard_degrade(
     quantizer_type: i32,
     noise_shape: f64,
     weighting: f64,
-) -> Vec<f64> {
+) {
+    let n_bins = magnitudes.len();
+    proc[..n_bins].copy_from_slice(magnitudes);
+
     if loss <= 0.0 {
-        return magnitudes.to_vec();
+        return;
     }
 
-    let mut proc = magnitudes.to_vec();
-
     // ---- Quantization ----
-    let max_mag = proc.iter().cloned().fold(0.0_f64, f64::max);
+    let max_mag = proc[..n_bins].iter().cloned().fold(0.0_f64, f64::max);
     if max_mag > 0.0 {
         let bits = 16.0 - 14.0 * loss; // loss 0 -> 16 bits, loss 1 -> 2 bits
         let n_levels = (2.0_f64).powf(bits);
 
         if quantizer_type == 1 {
             // Compand (power-law, MP3-style)
-            let mut compressed: Vec<f64> = proc.iter().map(|&x| x.powf(0.75)).collect();
-            let max_c = compressed.iter().cloned().fold(0.0_f64, f64::max);
+            for i in 0..n_bins {
+                compressed[i] = proc[i].powf(0.75);
+            }
+            let max_c = compressed[..n_bins].iter().cloned().fold(0.0_f64, f64::max);
             if max_c > 0.0 {
                 if noise_shape > 0.0 {
                     let base_delta = 2.0 * max_c / n_levels;
-                    let shaped = shape_delta(&compressed, base_delta, noise_shape);
-                    for i in 0..compressed.len() {
+                    shape_delta_inplace(&compressed[..n_bins], base_delta, noise_shape, envelope, inv_env, shaped);
+                    for i in 0..n_bins {
                         let d = shaped[i].max(1e-20);
                         compressed[i] = d * (compressed[i] / d).round();
                     }
                 } else {
                     let delta = 2.0 * max_c / n_levels;
-                    for c in compressed.iter_mut() {
-                        *c = delta * (*c / delta).round();
+                    for i in 0..n_bins {
+                        compressed[i] = delta * (compressed[i] / delta).round();
                     }
                 }
             }
-            for i in 0..proc.len() {
+            for i in 0..n_bins {
                 proc[i] = compressed[i].max(0.0).powf(4.0 / 3.0);
             }
         } else {
             // Uniform (mid-tread)
             if noise_shape > 0.0 {
                 let base_delta = 2.0 * max_mag / n_levels;
-                let shaped = shape_delta(&proc, base_delta, noise_shape);
-                let old = proc.clone();
-                for i in 0..proc.len() {
+                shape_delta_inplace(&magnitudes[..n_bins], base_delta, noise_shape, envelope, inv_env, shaped);
+                for i in 0..n_bins {
                     let d = shaped[i].max(1e-20);
-                    proc[i] = d * (old[i] / d).round();
+                    proc[i] = d * (magnitudes[i] / d).round();
                 }
             } else {
                 let delta = 2.0 * max_mag / n_levels;
-                for p in proc.iter_mut() {
-                    *p = delta * (*p / delta).round();
+                for i in 0..n_bins {
+                    proc[i] = delta * (proc[i] / delta).round();
                 }
             }
         }
     }
 
     // ---- Psychoacoustic band gating ----
-    let mut band_energy = vec![0.0_f64; n_bands];
     for b in 0..n_bands {
         let lo = band_edges[b];
         let hi = band_edges[b + 1];
         if hi > lo {
             let sum: f64 = proc[lo..hi].iter().map(|x| x * x).sum();
             band_energy[b] = sum / (hi - lo) as f64;
+        } else {
+            band_energy[b] = 0.0;
         }
     }
 
-    let mean_energy = band_energy.iter().sum::<f64>() / n_bands.max(1) as f64 + 1e-12;
+    let mean_energy = band_energy[..n_bands].iter().sum::<f64>() / n_bands.max(1) as f64 + 1e-12;
 
     for b in 0..n_bands {
-        // Signal-dependent: low-energy bands more likely to be gated
         let relative = (band_energy[b] / mean_energy).min(2.0) / 2.0;
-        // ATH-weighted
         let ath_factor = (1.0 - weighting) * 0.75 + weighting * (0.5 + 0.5 * ath_weights[b]);
-        // Combined gating probability
         let mut gate_prob = loss * 0.6 * (1.0 - relative) * ath_factor;
-        // Random perturbation
         gate_prob += rng.random() * loss * 0.2;
         if rng.random() < gate_prob {
             let lo = band_edges[b];
@@ -433,20 +454,24 @@ fn standard_degrade(
             }
         }
     }
-
-    proc
 }
 
-/// Envelope-following noise shaping.
-fn shape_delta(magnitudes: &[f64], base_delta: f64, amount: f64) -> Vec<f64> {
+/// Envelope-following noise shaping (in-place into pre-allocated buffers).
+fn shape_delta_inplace(
+    magnitudes: &[f64],
+    base_delta: f64,
+    amount: f64,
+    envelope: &mut [f64],
+    inv_env: &mut [f64],
+    shaped: &mut [f64],
+) {
     let n = magnitudes.len();
     if n == 0 {
-        return vec![];
+        return;
     }
 
     // 7-sample moving average for envelope
     let kernel_size = 7;
-    let mut envelope = vec![0.0_f64; n];
     for i in 0..n {
         let lo = i.saturating_sub(kernel_size / 2);
         let hi = (i + kernel_size / 2 + 1).min(n);
@@ -455,19 +480,23 @@ fn shape_delta(magnitudes: &[f64], base_delta: f64, amount: f64) -> Vec<f64> {
     }
 
     // Inverse envelope, normalized
-    let mut inv_env: Vec<f64> = envelope.iter().map(|&e| 1.0 / e).collect();
-    let max_inv = inv_env.iter().cloned().fold(0.0_f64, f64::max);
+    let mut max_inv = 0.0_f64;
+    for i in 0..n {
+        inv_env[i] = 1.0 / envelope[i];
+        if inv_env[i] > max_inv {
+            max_inv = inv_env[i];
+        }
+    }
     if max_inv > 0.0 {
-        for v in inv_env.iter_mut() {
-            *v /= max_inv;
+        for i in 0..n {
+            inv_env[i] /= max_inv;
         }
     }
 
     // amount=0 -> uniform delta, amount=1 -> 4x coarser in valleys
-    inv_env
-        .iter()
-        .map(|&v| base_delta * (1.0 + amount * v * 3.0))
-        .collect()
+    for i in 0..n {
+        shaped[i] = base_delta * (1.0 + amount * inv_env[i] * 3.0);
+    }
 }
 
 #[cfg(test)]

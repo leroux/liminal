@@ -175,7 +175,32 @@ impl FdnProcessor {
         }
     }
 
+    /// Process with wet_dry forced to 1.0 (avoids cloning params).
+    pub fn process_wet(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+        let n_samples = input.len();
+        debug_assert!(output.len() >= n_samples * 2);
+
+        self.update_matrix(params);
+
+        if params.has_modulation() {
+            self.update_matrix2(params);
+            self.process_modulated_inner(input, params, 1.0, output);
+        } else {
+            self.process_static_inner(input, params, 1.0, output);
+        }
+    }
+
     fn process_static(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+        self.process_static_inner(input, params, params.wet_dry, output);
+    }
+
+    fn process_static_inner(
+        &mut self,
+        input: &[f64],
+        params: &ReverbParams,
+        wet_dry: f64,
+        output: &mut [f64],
+    ) {
         let n_samples = input.len();
 
         // Extract params into locals (no allocation — just copies of scalars/slices)
@@ -198,16 +223,21 @@ impl FdnProcessor {
         let delay_buf_len = MAX_DELAY;
 
         let feedback_gain = params.feedback_gain;
-        let wet_dry = params.wet_dry;
         let saturation = params.saturation;
         let dry_gain = 1.0 - wet_dry;
 
-        let dc_r = 1.0 - 2.0 * std::f64::consts::PI * 5.0 / SR;
+        let dc_r: f64 = 1.0 - 2.0 * std::f64::consts::PI * 5.0 / SR;
 
-        // Compute pan gains (no allocation — fixed arrays)
+        // Hoist per-node gains to stack arrays (avoid per-sample .get() calls)
+        let mut output_gains = [1.0_f64; N];
+        let mut damping_coeffs = [0.3_f64; N];
+        let mut input_gains = [1.0 / N as f64; N];
         let mut pan_l = [0.0; N];
         let mut pan_r = [0.0; N];
         for i in 0..N {
+            output_gains[i] = params.output_gains.get(i).copied().unwrap_or(1.0);
+            damping_coeffs[i] = params.damping_coeffs.get(i).copied().unwrap_or(0.3);
+            input_gains[i] = params.input_gains.get(i).copied().unwrap_or(1.0 / N as f64);
             let pan = params.node_pans.get(i).copied().unwrap_or(0.0);
             let angle = (pan * params.stereo_width + 1.0) * std::f64::consts::FRAC_PI_4;
             pan_l[i] = angle.cos();
@@ -238,22 +268,21 @@ impl FdnProcessor {
             }
 
             // Read from delay lines + output taps
-            let mut wet_l = 0.0;
-            let mut wet_r = 0.0;
+            let mut wl = 0.0;
+            let mut wr = 0.0;
             for i in 0..N {
                 let wi = self.delay_write_idxs[i];
                 let rd = (wi + delay_buf_len - 1 - delay_times[i]) % delay_buf_len;
                 reads[i] = self.delay_bufs[i][rd];
-                let out_gain = params.output_gains.get(i).copied().unwrap_or(1.0);
-                let tap = reads[i] * out_gain;
-                wet_l += tap * pan_l[i];
-                wet_r += tap * pan_r[i];
+                let tap = reads[i] * output_gains[i];
+                wl += tap * pan_l[i];
+                wr += tap * pan_r[i];
             }
 
             // Damping
             for i in 0..N {
-                let a = params.damping_coeffs.get(i).copied().unwrap_or(0.3);
-                self.damping_y1[i] = (1.0 - a) * reads[i] + a * self.damping_y1[i];
+                self.damping_y1[i] =
+                    (1.0 - damping_coeffs[i]) * reads[i] + damping_coeffs[i] * self.damping_y1[i];
                 reads[i] = self.damping_y1[i];
             }
 
@@ -280,8 +309,7 @@ impl FdnProcessor {
             // Write back (saturation + DC blocker)
             for i in 0..N {
                 let wi = self.delay_write_idxs[i];
-                let in_gain = params.input_gains.get(i).copied().unwrap_or(1.0 / N as f64);
-                let mut val = feedback_gain * mixed[i] + in_gain * diffused;
+                let mut val = feedback_gain * mixed[i] + input_gains[i] * diffused;
                 if saturation > 0.0 {
                     val = (1.0 - saturation) * val + saturation * val.tanh();
                 }
@@ -292,12 +320,22 @@ impl FdnProcessor {
                 self.delay_write_idxs[i] = (wi + 1) % delay_buf_len;
             }
 
-            output[n * 2] = dry_gain * x + wet_dry * wet_l;
-            output[n * 2 + 1] = dry_gain * x + wet_dry * wet_r;
+            output[n * 2] = dry_gain * x + wet_dry * wl;
+            output[n * 2 + 1] = dry_gain * x + wet_dry * wr;
         }
     }
 
     fn process_modulated(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+        self.process_modulated_inner(input, params, params.wet_dry, output);
+    }
+
+    fn process_modulated_inner(
+        &mut self,
+        input: &[f64],
+        params: &ReverbParams,
+        wet_dry: f64,
+        output: &mut [f64],
+    ) {
         let n_samples = input.len();
 
         let pre_delay_samples = params.pre_delay.max(1) as usize;
@@ -319,15 +357,21 @@ impl FdnProcessor {
         let delay_buf_len = MAX_DELAY;
 
         let feedback_gain = params.feedback_gain;
-        let wet_dry = params.wet_dry;
         let saturation = params.saturation;
         let dry_gain = 1.0 - wet_dry;
 
-        let dc_r = 1.0 - 2.0 * std::f64::consts::PI * 5.0 / SR;
+        let dc_r: f64 = 1.0 - 2.0 * std::f64::consts::PI * 5.0 / SR;
 
+        // Hoist per-node gains to stack arrays (avoid per-sample .get() calls)
+        let mut base_output_gains = [1.0_f64; N];
+        let mut base_damping_coeffs = [0.3_f64; N];
+        let mut input_gains = [1.0 / N as f64; N];
         let mut pan_l = [0.0; N];
         let mut pan_r = [0.0; N];
         for i in 0..N {
+            base_output_gains[i] = params.output_gains.get(i).copied().unwrap_or(1.0);
+            base_damping_coeffs[i] = params.damping_coeffs.get(i).copied().unwrap_or(0.3);
+            input_gains[i] = params.input_gains.get(i).copied().unwrap_or(1.0 / N as f64);
             let pan = params.node_pans.get(i).copied().unwrap_or(0.0);
             let angle = (pan * params.stereo_width + 1.0) * std::f64::consts::FRAC_PI_4;
             pan_l[i] = angle.cos();
@@ -360,7 +404,6 @@ impl FdnProcessor {
         }
         let phase_inc_matrix = params.mod_rate_matrix / SR;
 
-        // Initialize phase offsets on first call (phases persist across calls)
         let any_delay_mod = mod_depth_delay.iter().any(|&d| d > 0.0);
         let any_damping_mod = mod_depth_damping.iter().any(|&d| d > 0.0);
         let any_output_mod = mod_depth_output.iter().any(|&d| d > 0.0);
@@ -369,6 +412,9 @@ impl FdnProcessor {
         let mut mixed = [0.0; N];
 
         let is_householder = self.is_householder;
+
+        // Pre-allocate blended matrix buffer for mat_blend path
+        let mut blended_mat = [0.0_f64; N * N];
 
         for n in 0..n_samples {
             let x = input[n];
@@ -400,8 +446,8 @@ impl FdnProcessor {
             };
 
             // Read from delay lines (with fractional delay modulation)
-            let mut wet_l = 0.0;
-            let mut wet_r = 0.0;
+            let mut wl = 0.0;
+            let mut wr = 0.0;
             for i in 0..N {
                 let wi = self.delay_write_idxs[i];
 
@@ -415,27 +461,25 @@ impl FdnProcessor {
                 reads[i] =
                     read_delay_frac(&self.delay_bufs[i], wi, current_delay, delay_buf_len);
 
-                let base_out = params.output_gains.get(i).copied().unwrap_or(1.0);
                 let current_out_gain = if any_output_mod && mod_depth_output[i] > 0.0 {
                     let lfo_o = lfo_value(self.phase_output[i], mod_waveform);
-                    (base_out * (1.0 + mod_depth_output[i] * lfo_o)).max(0.0)
+                    (base_output_gains[i] * (1.0 + mod_depth_output[i] * lfo_o)).max(0.0)
                 } else {
-                    base_out
+                    base_output_gains[i]
                 };
 
                 let tap = reads[i] * current_out_gain;
-                wet_l += tap * pan_l[i];
-                wet_r += tap * pan_r[i];
+                wl += tap * pan_l[i];
+                wr += tap * pan_r[i];
             }
 
             // Damping with modulated coefficients
             for i in 0..N {
-                let base_damp = params.damping_coeffs.get(i).copied().unwrap_or(0.3);
                 let current_damp = if any_damping_mod && mod_depth_damping[i] > 0.0 {
                     let lfo_da = lfo_value(self.phase_damping[i], mod_waveform);
-                    (base_damp + mod_depth_damping[i] * lfo_da).clamp(0.0, 0.999)
+                    (base_damping_coeffs[i] + mod_depth_damping[i] * lfo_da).clamp(0.0, 0.999)
                 } else {
-                    base_damp
+                    base_damping_coeffs[i]
                 };
                 self.damping_y1[i] = (1.0 - current_damp) * reads[i]
                     + current_damp * self.damping_y1[i];
@@ -451,13 +495,15 @@ impl FdnProcessor {
 
             // Matrix multiply (with optional blending)
             if mat_blend > 0.0 {
+                // Precompute blended matrix, then multiply (separates blend from matvec)
                 let inv_blend = 1.0 - mat_blend;
+                for k in 0..N * N {
+                    blended_mat[k] = self.mat[k] * inv_blend + self.mat2[k] * mat_blend;
+                }
                 for i in 0..N {
                     let mut s = 0.0;
                     for j in 0..N {
-                        let m = self.mat[i * N + j] * inv_blend
-                            + self.mat2[i * N + j] * mat_blend;
-                        s += m * reads[j];
+                        s += blended_mat[i * N + j] * reads[j];
                     }
                     mixed[i] = s;
                 }
@@ -483,8 +529,7 @@ impl FdnProcessor {
             // Write back (saturation + DC blocker)
             for i in 0..N {
                 let wi = self.delay_write_idxs[i];
-                let in_gain = params.input_gains.get(i).copied().unwrap_or(1.0 / N as f64);
-                let mut val = feedback_gain * mixed[i] + in_gain * diffused;
+                let mut val = feedback_gain * mixed[i] + input_gains[i] * diffused;
                 if saturation > 0.0 {
                     val = (1.0 - saturation) * val + saturation * val.tanh();
                 }
@@ -495,8 +540,8 @@ impl FdnProcessor {
                 self.delay_write_idxs[i] = (wi + 1) % delay_buf_len;
             }
 
-            output[n * 2] = dry_gain * x + wet_dry * wet_l;
-            output[n * 2 + 1] = dry_gain * x + wet_dry * wet_r;
+            output[n * 2] = dry_gain * x + wet_dry * wl;
+            output[n * 2 + 1] = dry_gain * x + wet_dry * wr;
         }
     }
 }
@@ -549,14 +594,11 @@ impl StereoFdnProcessor {
             self.scratch_r.resize(stereo_len, 0.0);
         }
 
-        // Process each channel with full wet
-        let mut wet_params = params.clone();
-        wet_params.wet_dry = 1.0;
-
+        // Process each channel with full wet (avoid params.clone() per call)
         self.fdn_l
-            .process(&left[..n], &wet_params, &mut self.scratch_l[..stereo_len]);
+            .process_wet(&left[..n], params, &mut self.scratch_l[..stereo_len]);
         self.fdn_r
-            .process(&right[..n], &wet_params, &mut self.scratch_r[..stereo_len]);
+            .process_wet(&right[..n], params, &mut self.scratch_r[..stereo_len]);
 
         // Mix: sum wet contributions from both channels, blend with dry
         for i in 0..n {
