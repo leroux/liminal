@@ -10,6 +10,32 @@ use crate::filters::{apply_one_pole_hp, apply_one_pole_lp};
 use crate::params::FractalParams;
 use num_complex::Complex64;
 use realfft::RealFftPlanner;
+use std::sync::Arc;
+
+// ---------------------------------------------------------------------------
+// Cached FFT plan + Hann window for spectral processing
+// ---------------------------------------------------------------------------
+
+struct SpectralPlan {
+    window: Vec<f64>,
+    fft: Arc<dyn realfft::RealToComplex<f64>>,
+    ifft: Arc<dyn realfft::ComplexToReal<f64>>,
+}
+
+impl SpectralPlan {
+    fn new(window_size: usize) -> Self {
+        let mut planner = RealFftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(window_size);
+        let ifft = planner.plan_fft_inverse(window_size);
+        let window: Vec<f64> = (0..window_size)
+            .map(|i| {
+                0.5 * (1.0
+                    - (2.0 * std::f64::consts::PI * i as f64 / window_size as f64).cos())
+            })
+            .collect();
+        Self { window, fft, ifft }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Time-domain fractalization
@@ -47,12 +73,9 @@ fn fractalize_time_nearest(
             compressed.reverse();
         }
 
-        // Tile with offset
+        // Tile with offset (modulo-free for auto-vectorization)
         let offset_samples = (scale_offset * compressed_len as f64) as usize;
-        for i in 0..n {
-            let src = (i + offset_samples) % compressed_len;
-            out[i] += gain * compressed[src];
-        }
+        tile_scaled_add(&compressed, offset_samples, gain, &mut out);
     }
 
     out
@@ -93,12 +116,9 @@ fn fractalize_time_linear(
             compressed.reverse();
         }
 
-        // Tile with offset
+        // Tile with offset (modulo-free for auto-vectorization)
         let offset_samples = (scale_offset * compressed_len as f64) as usize;
-        for i in 0..n {
-            let src = (i + offset_samples) % compressed_len;
-            out[i] += gain * compressed[src];
-        }
+        tile_scaled_add(&compressed, offset_samples, gain, &mut out);
     }
 
     out
@@ -201,13 +221,10 @@ pub fn fractalize_time_layers(samples: &[f64], params: &FractalParams) -> Vec<Ve
             compressed.reverse();
         }
 
-        // Tile with offset and apply gain
+        // Tile with offset and apply gain (modulo-free for auto-vectorization)
         let offset_samples = (scale_offset * compressed_len as f64) as usize;
         let mut layer = vec![0.0_f64; n];
-        for i in 0..n {
-            let src = (i + offset_samples) % compressed_len;
-            layer[i] = gain * compressed[src];
-        }
+        tile_scaled(&compressed, offset_samples, gain, &mut layer);
 
         layers.push(layer);
     }
@@ -249,30 +266,37 @@ fn apply_layer_tilt(layer: &mut [f64], tilt: f64, s: i32, num_scales: i32) {
 
 /// Apply fractalization to STFT magnitude frames.
 pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> {
+    let window_size = (params.window_size as usize).clamp(256, 8192);
+    let plan = SpectralPlan::new(window_size);
+    fractalize_spectral_with_plan(samples, params, &plan)
+}
+
+/// Apply fractalization to STFT magnitude frames, reusing a cached FFT plan.
+fn fractalize_spectral_with_plan(
+    samples: &[f64],
+    params: &FractalParams,
+    plan: &SpectralPlan,
+) -> Vec<f64> {
     let num_scales = params.num_scales.clamp(2, 8);
     let scale_ratio = params.scale_ratio.clamp(0.1, 0.9);
     let amplitude_decay = params.amplitude_decay.clamp(0.1, 1.0);
-    let window_size = (params.window_size as usize).clamp(256, 8192);
+    let window_size = plan.window.len();
     let hop_size = window_size / 4;
+    let window = &plan.window;
 
     let out_len = samples.len();
 
-    // Pad if needed
-    let x: Vec<f64> = if samples.len() < window_size {
-        let mut padded = samples.to_vec();
-        padded.resize(window_size, 0.0);
-        padded
+    // Use samples directly when possible, only pad when too short
+    let needs_pad = samples.len() < window_size;
+    let mut padded_storage;
+    let x: &[f64] = if needs_pad {
+        padded_storage = samples.to_vec();
+        padded_storage.resize(window_size, 0.0);
+        &padded_storage
     } else {
-        samples.to_vec()
+        samples
     };
     let n = x.len();
-
-    // Hann window
-    let window: Vec<f64> = (0..window_size)
-        .map(|i| {
-            0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / window_size as f64).cos())
-        })
-        .collect();
 
     let num_frames = if n >= window_size {
         1 + (n - window_size) / hop_size
@@ -284,11 +308,6 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
     }
 
     let num_bins = window_size / 2 + 1;
-
-    // Set up FFT
-    let mut planner = RealFftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(window_size);
-    let ifft = planner.plan_fft_inverse(window_size);
 
     // Pre-allocate per-frame buffers (reused across all frames)
     let mut frame = vec![0.0_f64; window_size];
@@ -306,7 +325,9 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
         })
         .collect();
 
-    let mut output = vec![0.0_f64; n.max(window_size + (num_frames - 1) * hop_size)];
+    // Size output exactly to out_len (avoid extra copy at end)
+    let ola_len = window_size + (num_frames - 1) * hop_size;
+    let mut output = vec![0.0_f64; ola_len.max(out_len)];
 
     for fi in 0..num_frames {
         let start = fi * hop_size;
@@ -317,12 +338,13 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
         }
 
         // Forward FFT
-        fft.process(&mut frame, &mut spectrum).unwrap();
+        plan.fft.process(&mut frame, &mut spectrum).unwrap();
 
-        // Extract magnitude and phase
+        // Extract magnitude and phase; copy mag to orig_mag in one pass
         for i in 0..num_bins {
-            mag[i] = spectrum[i].norm();
-            orig_mag[i] = mag[i];
+            let m = spectrum[i].norm();
+            mag[i] = m;
+            orig_mag[i] = m;
             phase[i] = spectrum[i].arg();
         }
 
@@ -345,10 +367,8 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
                 compressed[i] = orig_mag[idx0] * (1.0 - frac) + orig_mag[idx1] * frac;
             }
 
-            // Tile to fill
-            for i in 0..num_bins {
-                mag[i] += gain * compressed[i % compressed_len];
-            }
+            // Tile to fill (modulo-free for auto-vectorization)
+            tile_scaled_add(compressed, 0, gain, &mut mag[..num_bins]);
         }
 
         // Reconstruct complex spectrum in-place
@@ -362,7 +382,7 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
         }
 
         // Inverse FFT
-        ifft.process(&mut spectrum, &mut time_buf).unwrap();
+        plan.ifft.process(&mut spectrum, &mut time_buf).unwrap();
 
         // Apply window and normalize (realfft scales by N)
         let inv_n = 1.0 / window_size as f64;
@@ -374,12 +394,13 @@ pub fn fractalize_spectral(samples: &[f64], params: &FractalParams) -> Vec<f64> 
         }
     }
 
-    let mut result = output[..out_len].to_vec();
+    // Truncate in-place (no extra allocation)
+    output.truncate(out_len);
 
     // Normalize
-    normalize_to_input_peak_inplace(samples, &mut result);
+    normalize_to_input_peak_inplace(samples, &mut output);
 
-    result
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +434,14 @@ pub fn render_fractal_core(samples: &[f64], params: &FractalParams) -> Vec<f64> 
     let mut current = samples.to_vec();
     // Pre-allocate a scratch buffer for summing layers (reused across iterations)
     let mut sum_buf = vec![0.0_f64; n];
+
+    // Cache FFT plan + window if spectral processing is needed (once for all iterations)
+    let plan = if spectral_blend > 0.0 {
+        let ws = (params.window_size as usize).clamp(256, 8192);
+        Some(SpectralPlan::new(ws))
+    } else {
+        None
+    };
 
     for it in 0..iterations {
         // Time-domain fractalization via per-layer approach
@@ -457,14 +486,17 @@ pub fn render_fractal_core(samples: &[f64], params: &FractalParams) -> Vec<f64> 
                 current.copy_from_slice(&sum_buf[..n]);
             } else {
                 // Need to blend with spectral — compute spectral, then blend in-place
-                let spec_out = fractalize_spectral(&current, params);
+                let spec_out =
+                    fractalize_spectral_with_plan(&current, params, plan.as_ref().unwrap());
                 for i in 0..n {
-                    current[i] = (1.0 - spectral_blend) * sum_buf[i] + spectral_blend * spec_out[i];
+                    current[i] =
+                        (1.0 - spectral_blend) * sum_buf[i] + spectral_blend * spec_out[i];
                 }
             }
         } else {
             // Pure spectral
-            let spec_out = fractalize_spectral(&current, params);
+            let spec_out =
+                fractalize_spectral_with_plan(&current, params, plan.as_ref().unwrap());
             current.copy_from_slice(&spec_out[..n]);
         }
 
@@ -511,89 +543,95 @@ pub fn render_fractal_core_stereo(
     let mut cur_l = left.to_vec();
     let mut cur_r = right.to_vec();
 
+    // Cache FFT plan + window if spectral processing is needed
+    let plan = if spectral_blend > 0.0 {
+        let ws = (params.window_size as usize).clamp(256, 8192);
+        Some(SpectralPlan::new(ws))
+    } else {
+        None
+    };
+
+    // Precompute per-layer pan gains (constant across iterations)
+    let mut pan_gains_l = [0.0_f64; 8];
+    let mut pan_gains_r = [0.0_f64; 8];
+    for s in 1..num_scales as usize {
+        let sign = if s % 2 == 0 { 1.0 } else { -1.0 };
+        let pan = layer_spread * sign * s as f64 / (num_scales - 1).max(1) as f64;
+        let theta = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
+        pan_gains_l[s] = theta.cos();
+        pan_gains_r[s] = theta.sin();
+    }
+
     for it in 0..iterations {
-        let (time_l, time_r) = if spectral_blend < 1.0 {
+        // Restructured: compute only what's needed, avoid unnecessary clones
+        let (mut res_l, mut res_r) = if spectral_blend <= 0.0 {
+            // Pure time-domain
             let mut layers_l = fractalize_time_layers(&cur_l, params);
             let mut layers_r = fractalize_time_layers(&cur_r, params);
 
-            // Per-layer delay
-            if layer_delay_param > 0.0 {
-                let max_delay = (n as f64 * 0.1) as usize;
-                for s in 1..layers_l.len() {
-                    let ds = (layer_delay_param * max_delay as f64 * s as f64
-                        / (num_scales - 1).max(1) as f64) as usize;
-                    apply_layer_delay(&mut layers_l[s], ds);
-                    apply_layer_delay(&mut layers_r[s], ds);
-                }
-            }
+            apply_stereo_layer_effects(
+                &mut layers_l,
+                &mut layers_r,
+                layer_delay_param,
+                layer_tilt,
+                num_scales,
+                n,
+            );
 
-            // Per-layer tilt
-            if layer_tilt.abs() > 0.001 {
-                for s in 0..layers_l.len() {
-                    apply_layer_tilt(&mut layers_l[s], layer_tilt, s as i32, num_scales);
-                    apply_layer_tilt(&mut layers_r[s], layer_tilt, s as i32, num_scales);
-                }
-            }
+            let (out_l, out_r) = combine_stereo_layers(
+                &layers_l,
+                &layers_r,
+                &pan_gains_l,
+                &pan_gains_r,
+                n,
+            );
 
-            // Combine with per-layer constant-power pan
-            let mut out_l = vec![0.0_f64; n];
-            let mut out_r = vec![0.0_f64; n];
-
-            for (s, (ll, lr)) in layers_l.iter().zip(layers_r.iter()).enumerate() {
-                if s == 0 {
-                    // Layer 0 stays center
-                    for i in 0..n {
-                        out_l[i] += ll[i];
-                        out_r[i] += lr[i];
-                    }
-                } else {
-                    // Alternate layers left/right
-                    let sign = if s % 2 == 0 { 1.0 } else { -1.0 };
-                    let pan = layer_spread * sign * s as f64
-                        / (num_scales - 1).max(1) as f64;
-                    let theta = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
-                    let gain_l = theta.cos();
-                    let gain_r = theta.sin();
-                    for i in 0..n {
-                        out_l[i] += ll[i] * gain_l + lr[i] * gain_l;
-                        out_r[i] += ll[i] * gain_r + lr[i] * gain_r;
-                    }
-                }
-            }
-
-            let norm_l = normalize_to_input_peak(&cur_l, out_l);
-            let norm_r = normalize_to_input_peak(&cur_r, out_r);
-            (norm_l, norm_r)
-        } else {
-            (cur_l.clone(), cur_r.clone())
-        };
-
-        // Spectral blend per channel
-        let (spec_l, spec_r) = if spectral_blend > 0.0 {
             (
-                fractalize_spectral(&cur_l, params),
-                fractalize_spectral(&cur_r, params),
+                normalize_to_input_peak(&cur_l, out_l),
+                normalize_to_input_peak(&cur_r, out_r),
+            )
+        } else if spectral_blend >= 1.0 {
+            // Pure spectral
+            let p = plan.as_ref().unwrap();
+            (
+                fractalize_spectral_with_plan(&cur_l, params, p),
+                fractalize_spectral_with_plan(&cur_r, params, p),
             )
         } else {
-            (cur_l.clone(), cur_r.clone())
-        };
+            // Blend time + spectral
+            let mut layers_l = fractalize_time_layers(&cur_l, params);
+            let mut layers_r = fractalize_time_layers(&cur_r, params);
 
-        let (mut res_l, mut res_r) = if spectral_blend <= 0.0 {
-            (time_l, time_r)
-        } else if spectral_blend >= 1.0 {
-            (spec_l, spec_r)
-        } else {
-            let bl: Vec<f64> = time_l
-                .iter()
-                .zip(spec_l.iter())
-                .map(|(&t, &s)| (1.0 - spectral_blend) * t + spectral_blend * s)
-                .collect();
-            let br: Vec<f64> = time_r
-                .iter()
-                .zip(spec_r.iter())
-                .map(|(&t, &s)| (1.0 - spectral_blend) * t + spectral_blend * s)
-                .collect();
-            (bl, br)
+            apply_stereo_layer_effects(
+                &mut layers_l,
+                &mut layers_r,
+                layer_delay_param,
+                layer_tilt,
+                num_scales,
+                n,
+            );
+
+            let (out_l, out_r) = combine_stereo_layers(
+                &layers_l,
+                &layers_r,
+                &pan_gains_l,
+                &pan_gains_r,
+                n,
+            );
+
+            let mut tl = normalize_to_input_peak(&cur_l, out_l);
+            let mut tr = normalize_to_input_peak(&cur_r, out_r);
+
+            let p = plan.as_ref().unwrap();
+            let spec_l = fractalize_spectral_with_plan(&cur_l, params, p);
+            let spec_r = fractalize_spectral_with_plan(&cur_r, params, p);
+
+            // Blend in-place (no extra allocation)
+            for i in 0..n {
+                tl[i] = (1.0 - spectral_blend) * tl[i] + spectral_blend * spec_l[i];
+                tr[i] = (1.0 - spectral_blend) * tr[i] + spectral_blend * spec_r[i];
+            }
+            (tl, tr)
         };
 
         if saturation > 0.0 {
@@ -620,6 +658,128 @@ pub fn render_fractal_core_stereo(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Tile `src` (starting at `offset`) into `dst`, multiplying by `gain` and assigning.
+/// Modulo-free: uses sequential segment copies for auto-vectorization.
+fn tile_scaled(src: &[f64], offset: usize, gain: f64, dst: &mut [f64]) {
+    let cl = src.len();
+    if cl == 0 {
+        return;
+    }
+    let n = dst.len();
+    let start_in_src = offset % cl;
+    let mut pos = 0;
+
+    // First partial tile (from start_in_src to end of src)
+    let first_len = (cl - start_in_src).min(n);
+    for i in 0..first_len {
+        dst[i] = gain * src[start_in_src + i];
+    }
+    pos += first_len;
+
+    // Full tiles
+    while pos + cl <= n {
+        for i in 0..cl {
+            dst[pos + i] = gain * src[i];
+        }
+        pos += cl;
+    }
+
+    // Final partial tile
+    let remaining = n - pos;
+    for i in 0..remaining {
+        dst[pos + i] = gain * src[i];
+    }
+}
+
+/// Tile `src` (starting at `offset`) into `dst`, multiplying by `gain` and adding.
+/// Modulo-free: uses sequential segment copies for auto-vectorization.
+fn tile_scaled_add(src: &[f64], offset: usize, gain: f64, dst: &mut [f64]) {
+    let cl = src.len();
+    if cl == 0 {
+        return;
+    }
+    let n = dst.len();
+    let start_in_src = offset % cl;
+    let mut pos = 0;
+
+    // First partial tile
+    let first_len = (cl - start_in_src).min(n);
+    for i in 0..first_len {
+        dst[i] += gain * src[start_in_src + i];
+    }
+    pos += first_len;
+
+    // Full tiles
+    while pos + cl <= n {
+        for i in 0..cl {
+            dst[pos + i] += gain * src[i];
+        }
+        pos += cl;
+    }
+
+    // Final partial tile
+    let remaining = n - pos;
+    for i in 0..remaining {
+        dst[pos + i] += gain * src[i];
+    }
+}
+
+/// Apply delay and tilt effects to stereo layer pairs.
+fn apply_stereo_layer_effects(
+    layers_l: &mut [Vec<f64>],
+    layers_r: &mut [Vec<f64>],
+    layer_delay_param: f64,
+    layer_tilt: f64,
+    num_scales: i32,
+    n: usize,
+) {
+    if layer_delay_param > 0.0 {
+        let max_delay = (n as f64 * 0.1) as usize;
+        for s in 1..layers_l.len() {
+            let ds = (layer_delay_param * max_delay as f64 * s as f64
+                / (num_scales - 1).max(1) as f64) as usize;
+            apply_layer_delay(&mut layers_l[s], ds);
+            apply_layer_delay(&mut layers_r[s], ds);
+        }
+    }
+    if layer_tilt.abs() > 0.001 {
+        for s in 0..layers_l.len() {
+            apply_layer_tilt(&mut layers_l[s], layer_tilt, s as i32, num_scales);
+            apply_layer_tilt(&mut layers_r[s], layer_tilt, s as i32, num_scales);
+        }
+    }
+}
+
+/// Combine stereo layers with per-layer constant-power panning.
+fn combine_stereo_layers(
+    layers_l: &[Vec<f64>],
+    layers_r: &[Vec<f64>],
+    pan_gains_l: &[f64; 8],
+    pan_gains_r: &[f64; 8],
+    n: usize,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut out_l = vec![0.0_f64; n];
+    let mut out_r = vec![0.0_f64; n];
+
+    for (s, (ll, lr)) in layers_l.iter().zip(layers_r.iter()).enumerate() {
+        if s == 0 {
+            for i in 0..n {
+                out_l[i] += ll[i];
+                out_r[i] += lr[i];
+            }
+        } else {
+            let gl = pan_gains_l[s];
+            let gr = pan_gains_r[s];
+            for i in 0..n {
+                out_l[i] += ll[i] * gl + lr[i] * gl;
+                out_r[i] += ll[i] * gr + lr[i] * gr;
+            }
+        }
+    }
+
+    (out_l, out_r)
+}
 
 fn normalize_to_input_peak(input: &[f64], mut output: Vec<f64>) -> Vec<f64> {
     normalize_to_input_peak_inplace(input, &mut output);

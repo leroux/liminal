@@ -8,15 +8,16 @@
 
 use crate::core::{render_fractal_core, render_fractal_core_stereo};
 use crate::filters::{
-    apply_post_filter_inplace, apply_pre_filter, crush_and_decimate_inplace, limiter_inplace,
-    noise_gate_inplace,
+    apply_post_filter_inplace, apply_pre_filter_inplace, crush_and_decimate_inplace,
+    limiter_inplace, noise_gate_inplace,
 };
 use crate::params::{param_range, FractalParams, BOUNCE_TARGETS, SR};
 
 /// Core signal chain without bounce modulation.
 fn render_chain(dry: &[f64], params: &FractalParams) -> Vec<f64> {
-    // 1) Pre-filter (returns new Vec or clone)
-    let mut wet = apply_pre_filter(dry, params);
+    // 1) Pre-filter (clone once, filter in-place)
+    let mut wet = dry.to_vec();
+    apply_pre_filter_inplace(&mut wet, params);
 
     // 2) Fractalize (core algorithm with iterations)
     wet = render_fractal_core(&wet, params);
@@ -52,6 +53,7 @@ fn render_with_feedback_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
     let n = dry.len();
     let mut out = vec![0.0_f64; n];
     let mut feedback_buf = vec![0.0_f64; chunk_size];
+    let mut input_chunk = vec![0.0_f64; chunk_size];
 
     // Use params with feedback=0 to prevent recursion
     let mut inner_params = params.clone();
@@ -62,26 +64,24 @@ fn render_with_feedback_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
         let end = (start + chunk_size).min(n);
         let block_len = end - start;
 
-        // Mix feedback into input
-        let mut input_chunk: Vec<f64> = dry[start..end].to_vec();
+        // Mix feedback into input (reuse pre-allocated buffer)
+        input_chunk[..block_len].copy_from_slice(&dry[start..end]);
         for i in 0..block_len {
             input_chunk[i] += feedback * feedback_buf[i];
         }
 
         // Process
         let processed = if inner_params.bounce != 0 {
-            render_with_bounce(&input_chunk, &inner_params)
+            render_with_bounce(&input_chunk[..block_len], &inner_params)
         } else {
-            render_chain(&input_chunk, &inner_params)
+            render_chain(&input_chunk[..block_len], &inner_params)
         };
 
         out[start..end].copy_from_slice(&processed[..block_len]);
 
-        // Store for next chunk
-        feedback_buf = vec![0.0_f64; chunk_size];
-        for i in 0..block_len {
-            feedback_buf[i] = processed[i];
-        }
+        // Reuse feedback buffer (no re-allocation)
+        feedback_buf[..block_len].copy_from_slice(&processed[..block_len]);
+        feedback_buf[block_len..chunk_size].fill(0.0);
 
         start = end;
     }
@@ -91,7 +91,7 @@ fn render_with_feedback_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
 
 /// Render a single mono channel.
 fn render_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
-    let wet = if params.feedback > 0.001 {
+    let mut wet = if params.feedback > 0.001 {
         render_with_feedback_mono(dry, params)
     } else if params.bounce != 0 {
         render_with_bounce(dry, params)
@@ -99,11 +99,12 @@ fn render_mono(dry: &[f64], params: &FractalParams) -> Vec<f64> {
         render_chain(dry, params)
     };
 
+    // In-place wet/dry mix (no extra allocation)
     let mix = params.wet_dry;
-    dry.iter()
-        .zip(wet.iter())
-        .map(|(&d, &w)| d * (1.0 - mix) + w * mix)
-        .collect()
+    for (i, &d) in dry.iter().enumerate() {
+        wet[i] = d * (1.0 - mix) + wet[i] * mix;
+    }
+    wet
 }
 
 /// Block-based render with LFO modulation of a target parameter.
@@ -125,6 +126,10 @@ fn render_with_bounce(dry: &[f64], params: &FractalParams) -> Vec<f64> {
     let n = dry.len();
     let mut wet = vec![0.0_f64; n];
 
+    // Clone params once, patch per block (no per-block clone)
+    let mut block_params = params.clone();
+    block_params.bounce = 0; // prevent recursion
+
     let mut start = 0;
     while start < n {
         let end = (start + block_samples).min(n);
@@ -137,10 +142,8 @@ fn render_with_bounce(dry: &[f64], params: &FractalParams) -> Vec<f64> {
         // Modulate: sweep between lo and base_value
         let mod_value = (lo + lfo * (base_value - lo)).clamp(lo, hi);
 
-        // Create modified params for this block
-        let mut block_params = params.clone();
+        // Patch target value for this block
         block_params.set_bounce_target_value(target_key, mod_value);
-        block_params.bounce = 0; // prevent recursion
 
         let block_wet = render_chain(&dry[start..end], &block_params);
         wet[start..end].copy_from_slice(&block_wet);
@@ -160,9 +163,11 @@ pub fn render_fractal(input_audio: &[f64], params: &FractalParams) -> Vec<f64> {
 
 /// Stereo signal chain using render_fractal_core_stereo for spread.
 fn render_stereo_chain(left: &[f64], right: &[f64], params: &FractalParams) -> (Vec<f64>, Vec<f64>) {
-    // 1) Pre-filter per channel
-    let wet_l = apply_pre_filter(left, params);
-    let wet_r = apply_pre_filter(right, params);
+    // 1) Pre-filter per channel (clone + in-place)
+    let mut wet_l = left.to_vec();
+    let mut wet_r = right.to_vec();
+    apply_pre_filter_inplace(&mut wet_l, params);
+    apply_pre_filter_inplace(&mut wet_r, params);
 
     // 2) Stereo fractalize
     let (mut out_l, mut out_r) = render_fractal_core_stereo(&wet_l, &wet_r, params);
@@ -232,12 +237,11 @@ fn render_with_feedback_stereo(
         out_l[start..end].copy_from_slice(&proc_l[..block_len]);
         out_r[start..end].copy_from_slice(&proc_r[..block_len]);
 
-        fb_l = vec![0.0_f64; chunk_size];
-        fb_r = vec![0.0_f64; chunk_size];
-        for i in 0..block_len {
-            fb_l[i] = proc_l[i];
-            fb_r[i] = proc_r[i];
-        }
+        // Reuse feedback buffers (no re-allocation)
+        fb_l[..block_len].copy_from_slice(&proc_l[..block_len]);
+        fb_l[block_len..chunk_size].fill(0.0);
+        fb_r[..block_len].copy_from_slice(&proc_r[..block_len]);
+        fb_r[block_len..chunk_size].fill(0.0);
 
         start = end;
     }
@@ -254,7 +258,7 @@ pub fn render_fractal_stereo(
     let use_stereo_chain = params.layer_spread > 0.0;
     let use_feedback = params.feedback > 0.001;
 
-    let (wet_l, wet_r) = if use_feedback {
+    let (mut wet_l, mut wet_r) = if use_feedback {
         render_with_feedback_stereo(left, right, params)
     } else if use_stereo_chain {
         render_stereo_chain(left, right, params)
@@ -264,19 +268,15 @@ pub fn render_fractal_stereo(
         return (out_l, out_r);
     };
 
-    // Wet/dry mix
+    // In-place wet/dry mix (no extra allocation)
     let mix = params.wet_dry;
-    let out_l: Vec<f64> = left
-        .iter()
-        .zip(wet_l.iter())
-        .map(|(&d, &w)| d * (1.0 - mix) + w * mix)
-        .collect();
-    let out_r: Vec<f64> = right
-        .iter()
-        .zip(wet_r.iter())
-        .map(|(&d, &w)| d * (1.0 - mix) + w * mix)
-        .collect();
-    (out_l, out_r)
+    for (i, &d) in left.iter().enumerate() {
+        wet_l[i] = d * (1.0 - mix) + wet_l[i] * mix;
+    }
+    for (i, &d) in right.iter().enumerate() {
+        wet_r[i] = d * (1.0 - mix) + wet_r[i] * mix;
+    }
+    (wet_l, wet_r)
 }
 
 #[cfg(test)]

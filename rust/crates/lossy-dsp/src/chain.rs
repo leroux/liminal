@@ -115,6 +115,10 @@ fn render_with_bounce(dry: &[f64], params: &LossyParams) -> Vec<f64> {
     let n = dry.len();
     let mut wet = vec![0.0_f64; n];
 
+    // Clone params once outside loop, patch per block
+    let mut block_params = params.clone();
+    block_params.bounce = 0; // prevent recursion
+
     let mut start = 0;
     while start < n {
         let end = (start + block_samples).min(n);
@@ -127,10 +131,8 @@ fn render_with_bounce(dry: &[f64], params: &LossyParams) -> Vec<f64> {
         // Modulate: sweep between lo and base_value
         let mod_value = (lo + lfo * (base_value - lo)).clamp(lo, hi);
 
-        // Create modified params for this block
-        let mut block_params = params.clone();
+        // Patch target value for this block
         block_params.set_bounce_target_value(target_key, mod_value);
-        block_params.bounce = 0; // prevent recursion
 
         let block_wet = render_chain(&dry[start..end], &block_params);
         wet[start..end].copy_from_slice(&block_wet);
