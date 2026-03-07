@@ -1,75 +1,141 @@
 //! FDN reverb — nih-plug VST3/CLAP/standalone plugin.
 //!
 //! Wraps the reverb-dsp crate in a real-time plugin with egui GUI.
-//! Uses a collect-and-process strategy: input samples accumulate in a ring buffer,
-//! and when enough arrive, the entire FDN processes a block. The plugin reports
-//! latency equal to the processing block size.
+//! Uses pre-allocated `StereoFdnProcessor` for zero audio-thread allocations.
+//! DSP state (delay lines, filters, LFOs) persists across process calls.
 
 mod gui;
 mod params;
 pub mod presets;
 
 use nih_plug::prelude::*;
+use reverb_dsp::StereoFdnProcessor;
 use std::sync::Arc;
 
 use params::ReverbPluginParams;
 
-/// Processing block size. We collect this many samples before running the FDN.
-/// At 44100 Hz, 8192 samples = ~186ms latency.
-const PROCESS_BLOCK: usize = 8192;
-
 pub struct ReverbPlugin {
     params: Arc<ReverbPluginParams>,
     sample_rate: f32,
-    /// Per-channel input accumulation buffer.
-    input_buf: [Vec<f64>; 2],
-    /// Per-channel output drain buffer (processed audio waiting to be sent).
-    output_buf: [Vec<f64>; 2],
-    /// Write position into input_buf.
-    in_pos: usize,
-    /// Read position from output_buf.
-    out_pos: usize,
-    /// How many valid samples in output_buf from out_pos onward.
-    out_avail: usize,
-    /// True once we've filled the first block (latency compensation).
-    primed: bool,
+    /// Pre-allocated stereo FDN processor — zero allocations after init.
+    processor: StereoFdnProcessor,
+    /// Pre-allocated f64 input buffers for f32→f64 conversion.
+    input_l: Vec<f64>,
+    input_r: Vec<f64>,
+    /// Pre-allocated f64 output buffers.
+    output_l: Vec<f64>,
+    output_r: Vec<f64>,
+    /// Cached DSP params — avoids re-allocating Vecs every process call.
+    cached_dsp_params: reverb_dsp::ReverbParams,
 }
+
+/// Maximum buffer size we'll see from a host (pre-allocate for this).
+const MAX_BUFFER_SIZE: usize = 8192;
 
 impl Default for ReverbPlugin {
     fn default() -> Self {
         Self {
             params: Arc::new(ReverbPluginParams::default()),
             sample_rate: 44100.0,
-            input_buf: [vec![0.0; PROCESS_BLOCK], vec![0.0; PROCESS_BLOCK]],
-            output_buf: [vec![0.0; PROCESS_BLOCK], vec![0.0; PROCESS_BLOCK]],
-            in_pos: 0,
-            out_pos: 0,
-            out_avail: 0,
-            primed: false,
+            processor: StereoFdnProcessor::new(),
+            input_l: vec![0.0; MAX_BUFFER_SIZE],
+            input_r: vec![0.0; MAX_BUFFER_SIZE],
+            output_l: vec![0.0; MAX_BUFFER_SIZE],
+            output_r: vec![0.0; MAX_BUFFER_SIZE],
+            cached_dsp_params: reverb_dsp::ReverbParams::default(),
         }
     }
 }
 
 impl ReverbPlugin {
-    /// Build a ReverbParams from current nih-plug parameter values.
-    fn build_dsp_params(&self) -> reverb_dsp::ReverbParams {
-        self.params.to_dsp_params()
-    }
+    /// Update cached DSP params from nih-plug params.
+    /// Reuses the existing Vecs when possible to avoid allocation.
+    fn update_dsp_params(&mut self) {
+        let p = &self.params;
+        let d = &mut self.cached_dsp_params;
 
-    /// Process one block through the FDN reverb.
-    fn process_block(&mut self) {
-        let dsp_params = self.build_dsp_params();
+        // Update Vec contents in-place (no reallocation since lengths don't change)
+        d.delay_times[0] = p.delay_time_1.value();
+        d.delay_times[1] = p.delay_time_2.value();
+        d.delay_times[2] = p.delay_time_3.value();
+        d.delay_times[3] = p.delay_time_4.value();
+        d.delay_times[4] = p.delay_time_5.value();
+        d.delay_times[5] = p.delay_time_6.value();
+        d.delay_times[6] = p.delay_time_7.value();
+        d.delay_times[7] = p.delay_time_8.value();
 
-        let (out_l, out_r) = reverb_dsp::render_fdn_stereo(
-            &self.input_buf[0],
-            &self.input_buf[1],
-            &dsp_params,
-        );
+        d.damping_coeffs[0] = p.damping_1.value() as f64;
+        d.damping_coeffs[1] = p.damping_2.value() as f64;
+        d.damping_coeffs[2] = p.damping_3.value() as f64;
+        d.damping_coeffs[3] = p.damping_4.value() as f64;
+        d.damping_coeffs[4] = p.damping_5.value() as f64;
+        d.damping_coeffs[5] = p.damping_6.value() as f64;
+        d.damping_coeffs[6] = p.damping_7.value() as f64;
+        d.damping_coeffs[7] = p.damping_8.value() as f64;
 
-        self.output_buf[0] = out_l;
-        self.output_buf[1] = out_r;
-        self.out_pos = 0;
-        self.out_avail = PROCESS_BLOCK;
+        d.input_gains[0] = p.input_gain_1.value() as f64;
+        d.input_gains[1] = p.input_gain_2.value() as f64;
+        d.input_gains[2] = p.input_gain_3.value() as f64;
+        d.input_gains[3] = p.input_gain_4.value() as f64;
+        d.input_gains[4] = p.input_gain_5.value() as f64;
+        d.input_gains[5] = p.input_gain_6.value() as f64;
+        d.input_gains[6] = p.input_gain_7.value() as f64;
+        d.input_gains[7] = p.input_gain_8.value() as f64;
+
+        d.output_gains[0] = p.output_gain_1.value() as f64;
+        d.output_gains[1] = p.output_gain_2.value() as f64;
+        d.output_gains[2] = p.output_gain_3.value() as f64;
+        d.output_gains[3] = p.output_gain_4.value() as f64;
+        d.output_gains[4] = p.output_gain_5.value() as f64;
+        d.output_gains[5] = p.output_gain_6.value() as f64;
+        d.output_gains[6] = p.output_gain_7.value() as f64;
+        d.output_gains[7] = p.output_gain_8.value() as f64;
+
+        d.node_pans[0] = p.node_pan_1.value() as f64;
+        d.node_pans[1] = p.node_pan_2.value() as f64;
+        d.node_pans[2] = p.node_pan_3.value() as f64;
+        d.node_pans[3] = p.node_pan_4.value() as f64;
+        d.node_pans[4] = p.node_pan_5.value() as f64;
+        d.node_pans[5] = p.node_pan_6.value() as f64;
+        d.node_pans[6] = p.node_pan_7.value() as f64;
+        d.node_pans[7] = p.node_pan_8.value() as f64;
+
+        d.feedback_gain = p.feedback_gain.value() as f64;
+        d.wet_dry = p.wet_dry.value() as f64;
+        d.diffusion = p.diffusion.value() as f64;
+        d.diffusion_stages = p.diffusion_stages.value();
+        d.saturation = p.saturation.value() as f64;
+        d.pre_delay = p.pre_delay.value();
+        d.stereo_width = p.stereo_width.value() as f64;
+
+        let new_type = p.matrix_type.value().to_string_id();
+        if d.matrix_type != new_type {
+            d.matrix_type = new_type;
+        }
+        d.matrix_seed = p.matrix_seed.value();
+
+        d.mod_master_rate = p.mod_master_rate.value() as f64;
+        d.mod_correlation = p.mod_correlation.value() as f64;
+        d.mod_waveform = p.mod_waveform.value() as i32;
+
+        let mod_dd = p.mod_depth_delay.value() as f64;
+        let mod_da = p.mod_depth_damping.value() as f64;
+        let mod_do = p.mod_depth_output.value() as f64;
+        d.mod_depth_delay.fill(mod_dd);
+        d.mod_depth_damping.fill(mod_da);
+        d.mod_depth_output.fill(mod_do);
+
+        d.mod_depth_matrix = p.mod_depth_matrix.value() as f64;
+        d.mod_rate_scale_delay = p.mod_rate_scale_delay.value() as f64;
+        d.mod_rate_scale_damping = p.mod_rate_scale_damping.value() as f64;
+        d.mod_rate_scale_output = p.mod_rate_scale_output.value() as f64;
+        d.mod_rate_matrix = p.mod_rate_matrix.value() as f64;
+
+        let new_mat2_type = p.mod_matrix2_type.value().to_string_id();
+        if d.mod_matrix2_type != new_mat2_type {
+            d.mod_matrix2_type = new_mat2_type;
+        }
+        d.mod_matrix2_seed = p.mod_matrix2_seed.value();
     }
 }
 
@@ -106,24 +172,25 @@ impl Plugin for ReverbPlugin {
         &mut self,
         _layout: &AudioIOLayout,
         config: &BufferConfig,
-        context: &mut impl InitContext<Self>,
+        _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = config.sample_rate;
-        context.set_latency_samples(PROCESS_BLOCK as u32);
+
+        // Pre-allocate for maximum buffer size the host will use
+        let max_buf = config.max_buffer_size as usize;
+        if self.input_l.len() < max_buf {
+            self.input_l.resize(max_buf, 0.0);
+            self.input_r.resize(max_buf, 0.0);
+            self.output_l.resize(max_buf, 0.0);
+            self.output_r.resize(max_buf, 0.0);
+        }
+
+        // No added latency — state persists across process calls
         true
     }
 
     fn reset(&mut self) {
-        for buf in &mut self.input_buf {
-            buf.fill(0.0);
-        }
-        for buf in &mut self.output_buf {
-            buf.fill(0.0);
-        }
-        self.in_pos = 0;
-        self.out_pos = 0;
-        self.out_avail = 0;
-        self.primed = false;
+        self.processor.reset();
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
@@ -138,38 +205,36 @@ impl Plugin for ReverbPlugin {
     ) -> ProcessStatus {
         let num_samples = buffer.samples();
 
+        // Update DSP params from GUI (in-place, no allocation)
+        self.update_dsp_params();
+
+        // Convert f32 input to f64
+        let channel_slices = buffer.as_slice();
+        let n_channels = channel_slices.len();
         for i in 0..num_samples {
-            // Read input sample into accumulation buffer
-            let channel_slices = buffer.as_slice();
-            for ch in 0..2.min(channel_slices.len()) {
-                self.input_buf[ch][self.in_pos] = channel_slices[ch][i] as f64;
-            }
-            // If mono input, duplicate to right channel
-            if channel_slices.len() == 1 {
-                self.input_buf[1][self.in_pos] = channel_slices[0][i] as f64;
-            }
-            self.in_pos += 1;
-
-            // When input buffer is full, process it
-            if self.in_pos >= PROCESS_BLOCK {
-                self.process_block();
-                self.in_pos = 0;
-                self.primed = true;
-            }
-
-            // Write output (or silence if not yet primed)
-            if self.primed && self.out_avail > 0 {
-                let channel_slices = buffer.as_slice();
-                for ch in 0..2.min(channel_slices.len()) {
-                    channel_slices[ch][i] = self.output_buf[ch][self.out_pos] as f32;
-                }
-                self.out_pos += 1;
-                self.out_avail -= 1;
+            self.input_l[i] = channel_slices[0][i] as f64;
+            self.input_r[i] = if n_channels > 1 {
+                channel_slices[1][i] as f64
             } else {
-                let channel_slices = buffer.as_slice();
-                for ch in 0..channel_slices.len() {
-                    channel_slices[ch][i] = 0.0;
-                }
+                channel_slices[0][i] as f64
+            };
+        }
+
+        // Process through pre-allocated stereo FDN
+        self.processor.process_stereo(
+            &self.input_l[..num_samples],
+            &self.input_r[..num_samples],
+            &self.cached_dsp_params,
+            &mut self.output_l[..num_samples],
+            &mut self.output_r[..num_samples],
+        );
+
+        // Convert f64 output back to f32
+        let channel_slices = buffer.as_slice();
+        for i in 0..num_samples {
+            channel_slices[0][i] = self.output_l[i] as f32;
+            if n_channels > 1 {
+                channel_slices[1][i] = self.output_r[i] as f32;
             }
         }
 
