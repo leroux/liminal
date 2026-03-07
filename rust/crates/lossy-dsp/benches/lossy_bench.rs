@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use lossy_dsp::chain::{render_lossy, render_lossy_stereo};
 use lossy_dsp::params::LossyParams;
+use lossy_dsp::processor::{LossyProcessor, StereoLossyProcessor};
 
 fn make_sine(len: usize) -> Vec<f64> {
     (0..len)
@@ -139,11 +140,96 @@ fn bench_stereo(c: &mut Criterion) {
     group.finish();
 }
 
+// --- Pre-allocated processor vs allocating API ---
+
+fn bench_processor_vs_allocating(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lossy_alloc_vs_prealloc");
+    let input = make_sine(44100);
+    let params = default_params();
+
+    group.bench_function("allocating_1s", |b| {
+        b.iter(|| render_lossy(black_box(&input), black_box(&params)))
+    });
+
+    group.bench_function("prealloc_1s", |b| {
+        let mut proc = LossyProcessor::new();
+        let mut output = vec![0.0; 44100];
+        b.iter(|| proc.process(black_box(&input), black_box(&params), black_box(&mut output)))
+    });
+
+    group.finish();
+}
+
+// --- Plugin-realistic: small buffers, repeated calls ---
+
+fn bench_plugin_realistic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lossy_plugin_realistic");
+    let params = default_params();
+
+    // Simulate a DAW calling process() with 256-sample buffers
+    // Processing 1 second = ~172 calls
+    group.bench_function("prealloc_256x172", |b| {
+        let mut proc = LossyProcessor::new();
+        let input = make_sine(256);
+        let mut output = vec![0.0; 256];
+        b.iter(|| {
+            for _ in 0..172 {
+                proc.process(black_box(&input), black_box(&params), black_box(&mut output));
+            }
+        })
+    });
+
+    group.bench_function("allocating_256x172", |b| {
+        let input = make_sine(256);
+        b.iter(|| {
+            for _ in 0..172 {
+                render_lossy(black_box(&input), black_box(&params));
+            }
+        })
+    });
+
+    group.finish();
+}
+
+// --- Stereo processor ---
+
+fn bench_stereo_processor(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lossy_stereo_prealloc");
+    let left = make_sine(44100);
+    let right = make_sine(44100);
+
+    group.bench_function("allocating_1s", |b| {
+        let p = default_params();
+        b.iter(|| render_lossy_stereo(black_box(&left), black_box(&right), black_box(&p)))
+    });
+
+    group.bench_function("prealloc_1s", |b| {
+        let p = default_params();
+        let mut proc = StereoLossyProcessor::new();
+        let mut out_l = vec![0.0; 44100];
+        let mut out_r = vec![0.0; 44100];
+        b.iter(|| {
+            proc.process_stereo(
+                black_box(&left),
+                black_box(&right),
+                black_box(&p),
+                black_box(&mut out_l),
+                black_box(&mut out_r),
+            )
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_buffer_sizes,
     bench_window_sizes,
     bench_engine_configs,
     bench_stereo,
+    bench_processor_vs_allocating,
+    bench_plugin_realistic,
+    bench_stereo_processor,
 );
 criterion_main!(benches);

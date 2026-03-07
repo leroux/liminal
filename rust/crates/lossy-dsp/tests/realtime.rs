@@ -154,6 +154,67 @@ fn realtime_stereo() {
     );
 }
 
+// --- Pre-allocated processor tests (plugin path) ---
+
+#[test]
+fn realtime_processor_small_buffers() {
+    use lossy_dsp::processor::LossyProcessor;
+
+    // Simulate DAW calling with 256-sample buffers for 5 seconds of audio.
+    let input = make_sine(256);
+    let params = LossyParams::default();
+    let mut proc = LossyProcessor::new();
+    let mut output = vec![0.0; 256];
+
+    let n_calls = N_SAMPLES / 256;
+    let audio_secs = AUDIO_DURATION_SECS;
+    let start = Instant::now();
+    for _ in 0..n_calls {
+        proc.process(&input, &params, &mut output);
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let rtf = elapsed / audio_secs;
+    eprintln!(
+        "  Processor 256×{n_calls}: {elapsed:.4}s processing, RTF = {rtf:.4} ({:.0}x realtime)",
+        1.0 / rtf
+    );
+    assert!(
+        rtf < MAX_RTF,
+        "Processor small-buffer RTF {rtf:.4} exceeds {MAX_RTF}"
+    );
+}
+
+#[test]
+fn realtime_processor_stereo() {
+    use lossy_dsp::processor::StereoLossyProcessor;
+
+    // Process in 256-sample chunks (processor has MAX_BLOCK=8192 limit)
+    let left = make_sine(256);
+    let right = make_sine(256);
+    let params = LossyParams::default();
+    let mut proc = StereoLossyProcessor::new();
+    let mut out_l = vec![0.0; 256];
+    let mut out_r = vec![0.0; 256];
+
+    let n_calls = N_SAMPLES / 256;
+    let audio_secs = AUDIO_DURATION_SECS;
+    let start = Instant::now();
+    for _ in 0..n_calls {
+        proc.process_stereo(&left, &right, &params, &mut out_l, &mut out_r);
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let rtf = elapsed / audio_secs;
+    eprintln!(
+        "  StereoProcessor 256×{n_calls}: {elapsed:.4}s processing, RTF = {rtf:.4} ({:.0}x realtime)",
+        1.0 / rtf
+    );
+    // Stereo processes 2 independent channels
+    assert!(
+        rtf < MAX_RTF * 2.0,
+        "Stereo processor RTF {rtf:.4} exceeds {}", MAX_RTF * 2.0
+    );
+}
+
 /// Verify that output is always finite across various configurations.
 #[test]
 fn output_safety_all_configs() {
