@@ -8,3 +8,10 @@ realfft.workspace = true
 num-complex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "fractal_bench"
+harness = false

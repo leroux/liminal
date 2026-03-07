@@ -98,47 +98,64 @@ pub fn apply_post_filter(audio: &[f64], params: &FractalParams) -> Vec<f64> {
     biquad_process(audio, &coeffs)
 }
 
+/// Apply post-fractal filter in-place.
+pub fn apply_post_filter_inplace(audio: &mut [f64], params: &FractalParams) {
+    if params.post_filter_type == 0 {
+        return;
+    }
+    let freq = params.post_filter_freq.clamp(20.0, SR / 2.0 - 1.0);
+    let c = compute_biquad_coeffs(params.post_filter_type, freq, 0.707);
+    let mut w1 = 0.0_f64;
+    let mut w2 = 0.0_f64;
+    for s in audio.iter_mut() {
+        let w0 = *s - c.a1 * w1 - c.a2 * w2;
+        *s = c.b0 * w0 + c.b1 * w1 + c.b2 * w2;
+        w2 = w1;
+        w1 = w0;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bitcrusher + sample rate reducer
 // ---------------------------------------------------------------------------
 
 /// Apply bitcrusher and/or sample rate reducer.
 pub fn crush_and_decimate(audio: &[f64], params: &FractalParams) -> Vec<f64> {
+    let mut out = audio.to_vec();
+    crush_and_decimate_inplace(&mut out, params);
+    out
+}
+
+/// Apply bitcrusher and/or sample rate reducer in-place.
+pub fn crush_and_decimate_inplace(audio: &mut [f64], params: &FractalParams) {
     let crush = params.crush;
     let decimate = params.decimate;
 
     if crush <= 0.0 && decimate <= 0.0 {
-        return audio.to_vec();
+        return;
     }
-
-    let n = audio.len();
-    let mut out = vec![0.0_f64; n];
 
     if crush > 0.0 {
         let bits = 16.0 - 12.0 * crush;
         let quant = (2.0_f64).powf(bits - 1.0);
-        for i in 0..n {
-            out[i] = (audio[i] * quant + 0.5).floor() / quant;
+        for s in audio.iter_mut() {
+            *s = (*s * quant + 0.5).floor() / quant;
         }
-    } else {
-        out.copy_from_slice(audio);
     }
 
     if decimate > 0.0 {
         let rate_factor = 1.0 + 31.0 * decimate;
         let mut phase = 0.0_f64;
         let mut held = 0.0_f64;
-        for i in 0..n {
+        for s in audio.iter_mut() {
             phase += 1.0;
             if phase >= rate_factor {
-                held = out[i];
+                held = *s;
                 phase -= rate_factor;
             }
-            out[i] = held;
+            *s = held;
         }
     }
-
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +164,19 @@ pub fn crush_and_decimate(audio: &[f64], params: &FractalParams) -> Vec<f64> {
 
 /// Simple RMS-based noise gate.
 pub fn noise_gate(audio: &[f64], params: &FractalParams) -> Vec<f64> {
+    let mut out = audio.to_vec();
+    noise_gate_inplace(&mut out, params);
+    out
+}
+
+/// Simple RMS-based noise gate, in-place.
+pub fn noise_gate_inplace(audio: &mut [f64], params: &FractalParams) {
     let threshold = params.gate;
     if threshold <= 0.0 {
-        return audio.to_vec();
+        return;
     }
 
     let n = audio.len();
-    let mut out = audio.to_vec();
     let win = 512_usize;
     let mut start = 0;
     while start < n {
@@ -166,12 +189,11 @@ pub fn noise_gate(audio: &[f64], params: &FractalParams) -> Vec<f64> {
         if rms < threshold {
             let gain = rms / threshold;
             for i in start..end {
-                out[i] *= gain;
+                audio[i] *= gain;
             }
         }
         start = end;
     }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -215,17 +237,21 @@ pub fn apply_one_pole_hp(audio: &mut [f64], cutoff_hz: f64) {
 ///
 /// threshold 0 = heavy limiting (ceiling 0.1), threshold 1 = light (ceiling 0.95).
 pub fn limiter(audio: &[f64], params: &FractalParams) -> Vec<f64> {
-    let ceiling = 0.1 + 0.85 * params.threshold;
+    let mut out = audio.to_vec();
+    limiter_inplace(&mut out, params);
+    out
+}
 
+/// Simple peak limiter, in-place.
+pub fn limiter_inplace(audio: &mut [f64], params: &FractalParams) {
+    let ceiling = 0.1 + 0.85 * params.threshold;
     let peak = audio.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
-    if peak <= 0.0 {
-        return audio.to_vec();
-    }
-    if peak > ceiling {
+    if peak > ceiling && peak > 0.0 {
         let scale = ceiling / peak;
-        return audio.iter().map(|x| x * scale).collect();
+        for s in audio.iter_mut() {
+            *s *= scale;
+        }
     }
-    audio.to_vec()
 }
 
 #[cfg(test)]
