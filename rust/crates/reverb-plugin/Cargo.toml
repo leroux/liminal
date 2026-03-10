@@ -14,8 +14,10 @@ path = "src/main.rs"
 reverb-dsp = { path = "../reverb-dsp" }
 shared-dsp = { path = "../shared-dsp" }
 nih_plug.workspace = true
-nih_plug_egui.workspace = true
+nih_plug_vizia.workspace = true
 serde_json.workspace = true
+claudewire = { path = "../claudewire" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.24.0"

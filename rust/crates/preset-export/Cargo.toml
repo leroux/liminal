@@ -1,0 +1,15 @@
+[package]
+name = "preset-export"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "preset-export"
+path = "src/main.rs"
+
+[dependencies]
+reverb-dsp = { path = "../reverb-dsp" }
+lossy-dsp = { path = "../lossy-dsp" }
+fractal-dsp = { path = "../fractal-dsp" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,390 +1,343 @@
-//! egui-based GUI for the Lossy plugin — CRT phosphor theme.
+//! Vizia GUI for the Lossy plugin.
 
 use crate::params::LossyPluginParams;
 use crate::presets::{self, Preset};
+use claudewire::chat::{ChatBackend, ChatMsg};
 use nih_plug::prelude::*;
-use nih_plug_egui::{create_egui_editor, egui, widgets};
+use nih_plug_vizia::vizia::prelude::*;
+use nih_plug_vizia::widgets::*;
+use nih_plug_vizia::{assets, create_vizia_editor, ViziaTheming};
 use std::sync::Arc;
 
-// --- CRT phosphor color palette ---
-const BG_DARK: egui::Color32 = egui::Color32::from_rgb(10, 15, 10);
-const BG_SECTION: egui::Color32 = egui::Color32::from_rgb(22, 30, 22);
-const BG_SLIDER: egui::Color32 = egui::Color32::from_rgb(26, 36, 26);
-const GREEN_PRIMARY: egui::Color32 = egui::Color32::from_rgb(0, 221, 85);
-const GREEN_DIM: egui::Color32 = egui::Color32::from_rgb(0, 102, 48);
-const GREEN_ACCENT: egui::Color32 = egui::Color32::from_rgb(0, 255, 102);
-const GREEN_FAINT: egui::Color32 = egui::Color32::from_rgb(0, 40, 16);
-const SCANLINE: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 18);
-
-/// State persisted across GUI frames.
-struct GuiState {
+#[derive(Clone, Lens)]
+struct GuiData {
+    params: Arc<LossyPluginParams>,
     presets: Vec<Preset>,
-    selected: usize, // 0 = "(no preset)", 1.. = preset index + 1
-    loaded: bool,
+    selected: usize,
+    chat_input: String,
+    chat_messages: Vec<(String, String)>,
+    chat_busy: bool,
 }
 
-pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
-    create_egui_editor(
-        params.editor_state.clone(),
-        GuiState {
-            presets: Vec::new(),
-            selected: 0,
-            loaded: false,
-        },
-        // --- Build closure: theme setup (runs once per editor open) ---
-        |egui_ctx, _state| {
-            let mut style = (*egui_ctx.style()).clone();
+impl nih_plug_vizia::vizia::binding::Data for Preset {
+    fn same(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
 
-            // Monospace everywhere
-            let mono = |size: f32| egui::FontId::new(size, egui::FontFamily::Monospace);
-            style.text_styles.insert(egui::TextStyle::Body, mono(13.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, mono(13.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Heading, mono(18.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Small, mono(11.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Monospace, mono(13.0));
-
-            // Visuals overrides
-            let v = &mut style.visuals;
-            v.dark_mode = true;
-            v.override_text_color = Some(GREEN_PRIMARY);
-            v.panel_fill = BG_DARK;
-            v.collapsing_header_frame = true;
-            v.selection.bg_fill = egui::Color32::from_rgba_premultiplied(0, 28, 11, 40);
-
-            // Widget states — sharp corners, CRT fills
-            let zero = egui::CornerRadius::ZERO;
-
-            v.widgets.inactive.bg_fill = BG_SLIDER;
-            v.widgets.inactive.weak_bg_fill = BG_SECTION;
-            v.widgets.inactive.corner_radius = zero;
-
-            v.widgets.active.bg_fill = egui::Color32::from_rgb(0, 60, 25);
-            v.widgets.active.corner_radius = zero;
-
-            v.widgets.hovered.bg_fill = egui::Color32::from_rgb(30, 45, 30);
-            v.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(25, 38, 25);
-            v.widgets.hovered.corner_radius = zero;
-            v.widgets.hovered.expansion = 1.0;
-
-            v.widgets.noninteractive.bg_fill = BG_SECTION;
-            v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, GREEN_FAINT);
-            v.widgets.noninteractive.corner_radius = zero;
-
-            v.widgets.open.bg_fill = BG_SECTION;
-            v.widgets.open.corner_radius = zero;
-
-            v.window_corner_radius = zero;
-            v.menu_corner_radius = zero;
-
-            // Spacing
-            style.spacing.item_spacing = egui::vec2(8.0, 4.0);
-            style.spacing.slider_width = 200.0;
-
-            egui_ctx.set_style(style);
-        },
-        // --- Update closure: runs every frame ---
-        move |egui_ctx, setter, state| {
-            // Lazy-load presets on first frame
-            if !state.loaded {
-                if let Some(dir) = presets::find_preset_dir() {
-                    state.presets = presets::load_presets(&dir);
-                    nih_plug::nih_log!(
-                        "Loaded {} presets from {}",
-                        state.presets.len(),
-                        dir.display()
-                    );
+impl Model for GuiData {
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|e, _| match e {
+            GuiEvent::SelectPreset(idx) => {
+                self.selected = *idx;
+                if *idx > 0 {
+                    if let Some(preset) = self.presets.get(*idx - 1) {
+                        apply_preset_vizia(cx, &self.params, &preset.params);
+                    }
                 }
-                if state.presets.is_empty() {
-                    state.presets = presets::load_embedded_presets();
-                    nih_plug::nih_log!("Loaded {} embedded presets", state.presets.len());
-                }
-                state.loaded = true;
             }
-
-            egui::CentralPanel::default().show(egui_ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    // ═══ Header ═══
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("L O S S Y")
-                                .heading()
-                                .color(GREEN_ACCENT)
-                                .strong(),
-                        );
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.label(
-                                    egui::RichText::new("codec emulator")
-                                        .small()
-                                        .color(GREEN_DIM),
-                                );
-                            },
-                        );
-                    });
-                    ui.separator();
-
-                    // ═══ Preset Browser ═══
-                    if !state.presets.is_empty() {
-                        ui.horizontal(|ui| {
-                            // Prev button
-                            if ui
-                                .add_enabled(state.selected > 1, egui::Button::new("\u{25C0}"))
-                                .clicked()
-                            {
-                                state.selected -= 1;
-                                presets::apply_preset(
-                                    &state.presets[state.selected - 1],
-                                    &params,
-                                    setter,
-                                );
-                            }
-
-                            // Preset ComboBox
-                            let current_label = if state.selected == 0 {
-                                "(no preset)".to_string()
-                            } else {
-                                let p = &state.presets[state.selected - 1];
-                                if p.category.is_empty() || p.category == "Uncategorized" {
-                                    p.name.clone()
-                                } else {
-                                    format!("[{}] {}", p.category, p.name)
+            GuiEvent::SetChatInput(text) => {
+                self.chat_input = text.clone();
+            }
+            GuiEvent::SendChat => {
+                if self.chat_input.trim().is_empty() || self.chat_busy {
+                    return;
+                }
+                let text = self.chat_input.clone();
+                self.chat_messages.push(("user".into(), text.clone()));
+                self.chat_input.clear();
+                self.chat_busy = true;
+                CHAT_BACKEND.with(|cell| {
+                    let mut backend = cell.borrow_mut();
+                    if backend.is_none() {
+                        *backend = Some(ChatBackend::new(SYSTEM_PROMPT));
+                    }
+                    if let Some(b) = backend.as_ref() {
+                        b.send(&text);
+                    }
+                });
+            }
+            GuiEvent::PollChat => {
+                CHAT_BACKEND.with(|cell| {
+                    if let Some(b) = cell.borrow().as_ref() {
+                        for msg in b.poll() {
+                            match msg {
+                                ChatMsg::AssistantText(text) => {
+                                    if let Some(last) = self.chat_messages.last_mut() {
+                                        if last.0 == "assistant" {
+                                            last.1 = text;
+                                            return;
+                                        }
+                                    }
+                                    self.chat_messages.push(("assistant".into(), text));
                                 }
-                            };
-
-                            egui::ComboBox::from_id_salt("preset_selector")
-                                .selected_text(&current_label)
-                                .width(ui.available_width() - 32.0)
-                                .show_ui(ui, |ui| {
-                                    if ui
-                                        .selectable_label(state.selected == 0, "(no preset)")
-                                        .clicked()
-                                    {
-                                        state.selected = 0;
-                                    }
-                                    let mut last_cat = String::new();
-                                    for (i, preset) in state.presets.iter().enumerate() {
-                                        if preset.category != last_cat {
-                                            ui.separator();
-                                            ui.label(
-                                                egui::RichText::new(&preset.category)
-                                                    .color(GREEN_ACCENT)
-                                                    .strong(),
-                                            );
-                                            last_cat = preset.category.clone();
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                state.selected == i + 1,
-                                                &preset.name,
-                                            )
-                                            .clicked()
-                                        {
-                                            state.selected = i + 1;
-                                            presets::apply_preset(preset, &params, setter);
-                                        }
-                                    }
-                                });
-
-                            // Next button
-                            if ui
-                                .add_enabled(
-                                    state.selected < state.presets.len(),
-                                    egui::Button::new("\u{25B6}"),
-                                )
-                                .clicked()
-                            {
-                                state.selected += 1;
-                                presets::apply_preset(
-                                    &state.presets[state.selected - 1],
-                                    &params,
-                                    setter,
-                                );
-                            }
-                        });
-
-                        // Preset description
-                        if state.selected > 0 {
-                            let desc = &state.presets[state.selected - 1].description;
-                            if !desc.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(desc)
-                                        .italics()
-                                        .small()
-                                        .color(GREEN_DIM),
-                                );
+                                ChatMsg::Error(e) => {
+                                    self.chat_messages.push(("error".into(), e));
+                                    self.chat_busy = false;
+                                }
+                                ChatMsg::Done => {
+                                    self.chat_busy = false;
+                                }
                             }
                         }
-                        ui.separator();
                     }
-
-                    // ═══ Top-level params (always visible) ═══
-                    ui.add(widgets::ParamSlider::for_param(&params.loss, setter));
-                    ui.add(widgets::ParamSlider::for_param(&params.wet_dry, setter));
-                    ui.separator();
-
-                    // ═══ SPECTRAL (full width, 14 params) ═══
-                    egui::CollapsingHeader::new(
-                        egui::RichText::new("SPECTRAL").color(GREEN_ACCENT).strong(),
-                    )
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.add(widgets::ParamSlider::for_param(&params.mode, setter));
-                        ui.add(widgets::ParamSlider::for_param(&params.jitter, setter));
-                        ui.add(widgets::ParamSlider::for_param(&params.window_size, setter));
-                        ui.add(widgets::ParamSlider::for_param(&params.hop_divisor, setter));
-                        ui.add(widgets::ParamSlider::for_param(&params.n_bands, setter));
-                        ui.add(widgets::ParamSlider::for_param(
-                            &params.global_amount,
-                            setter,
-                        ));
-                        ui.add(widgets::ParamSlider::for_param(&params.phase_loss, setter));
-                        ui.add(widgets::ParamSlider::for_param(&params.quantizer, setter));
-                        ui.add(widgets::ParamSlider::for_param(&params.pre_echo, setter));
-                        ui.add(widgets::ParamSlider::for_param(
-                            &params.noise_shape,
-                            setter,
-                        ));
-                        ui.add(widgets::ParamSlider::for_param(&params.weighting, setter));
-                        ui.add(widgets::ParamSlider::for_param(
-                            &params.hf_threshold,
-                            setter,
-                        ));
-                        ui.add(widgets::ParamSlider::for_param(
-                            &params.transient_ratio,
-                            setter,
-                        ));
-                        ui.add(widgets::ParamSlider::for_param(
-                            &params.slushy_rate,
-                            setter,
-                        ));
-                    });
-
-                    // ═══ Two-column grid for smaller sections ═══
-                    ui.columns(2, |columns| {
-                        // --- Left column ---
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("CRUSH").color(GREEN_ACCENT).strong(),
-                        )
-                        .default_open(false)
-                        .show(&mut columns[0], |ui| {
-                            ui.add(widgets::ParamSlider::for_param(&params.crush, setter));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.decimate,
-                                setter,
-                            ));
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("FILTER").color(GREEN_ACCENT).strong(),
-                        )
-                        .default_open(false)
-                        .show(&mut columns[0], |ui| {
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.filter_type,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.filter_freq,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.filter_width,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.filter_slope,
-                                setter,
-                            ));
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("FREEZE").color(GREEN_ACCENT).strong(),
-                        )
-                        .default_open(false)
-                        .show(&mut columns[0], |ui| {
-                            ui.add(widgets::ParamSlider::for_param(&params.freeze, setter));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.freeze_mode,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(&params.freezer, setter));
-                        });
-
-                        // --- Right column ---
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("PACKETS").color(GREEN_ACCENT).strong(),
-                        )
-                        .default_open(false)
-                        .show(&mut columns[1], |ui| {
-                            ui.add(widgets::ParamSlider::for_param(&params.packets, setter));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.packet_rate,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.packet_size,
-                                setter,
-                            ));
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("REVERB").color(GREEN_ACCENT).strong(),
-                        )
-                        .default_open(false)
-                        .show(&mut columns[1], |ui| {
-                            ui.add(widgets::ParamSlider::for_param(&params.verb, setter));
-                            ui.add(widgets::ParamSlider::for_param(&params.decay, setter));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.verb_position,
-                                setter,
-                            ));
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("GATE / LIMITER")
-                                .color(GREEN_ACCENT)
-                                .strong(),
-                        )
-                        .default_open(false)
-                        .show(&mut columns[1], |ui| {
-                            ui.add(widgets::ParamSlider::for_param(&params.gate, setter));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.threshold,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.auto_gain,
-                                setter,
-                            ));
-                            ui.add(widgets::ParamSlider::for_param(
-                                &params.loss_gain,
-                                setter,
-                            ));
-                        });
-                    });
                 });
+            }
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
+enum GuiEvent {
+    SelectPreset(usize),
+    SetChatInput(String),
+    SendChat,
+    PollChat,
+}
+
+thread_local! {
+    static CHAT_BACKEND: std::cell::RefCell<Option<ChatBackend>> = const { std::cell::RefCell::new(None) };
+}
+
+const SYSTEM_PROMPT: &str = "You are an audio effects tuning assistant for a lossy codec emulation plugin. \
+    Help the user achieve their desired lo-fi or codec artifact sound. Give concise advice about parameter adjustments. \
+    Keep responses short and focused on audio production.";
+
+pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
+    create_vizia_editor(
+        params.editor_state.clone(),
+        ViziaTheming::Custom,
+        move |cx, _| {
+            assets::register_noto_sans_light(cx);
+
+            let mut all_presets = Vec::new();
+            if let Some(dir) = presets::find_preset_dir() {
+                all_presets = presets::load_presets(&dir);
+            }
+            if all_presets.is_empty() {
+                all_presets = presets::load_embedded_presets();
+            }
+
+            GuiData {
+                params: params.clone(),
+                presets: all_presets,
+                selected: 0,
+                chat_input: String::new(),
+                chat_messages: Vec::new(),
+                chat_busy: false,
+            }
+            .build(cx);
+
+            cx.spawn(|proxy| loop {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if proxy.emit(GuiEvent::PollChat).is_err() {
+                    break;
+                }
             });
 
-            // ═══ Scan-line overlay ═══
-            let painter = egui_ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("scanlines"),
-            ));
-            let rect = egui_ctx.screen_rect();
-            let mut y = rect.top();
-            while y < rect.bottom() {
-                painter.hline(rect.x_range(), y, egui::Stroke::new(1.0, SCANLINE));
-                y += 3.0;
-            }
+            VStack::new(cx, |cx| {
+                Label::new(cx, "Lossy")
+                    .font_family(vec![FamilyOwned::Name(String::from(assets::NOTO_SANS))])
+                    .font_weight(FontWeightKeyword::Thin)
+                    .font_size(30.0)
+                    .height(Pixels(42.0))
+                    .child_top(Stretch(1.0))
+                    .child_bottom(Pixels(0.0));
+
+                HStack::new(cx, |cx| {
+                    Label::new(cx, "Preset:").width(Auto);
+                    Dropdown::new(
+                        cx,
+                        |cx| {
+                            Label::new(
+                                cx,
+                                GuiData::root.map(|d: &GuiData| {
+                                    if d.selected == 0 {
+                                        "(init)".to_string()
+                                    } else if d.selected <= d.presets.len() {
+                                        d.presets[d.selected - 1].name.clone()
+                                    } else {
+                                        String::new()
+                                    }
+                                }),
+                            )
+                        },
+                        |cx| {
+                            ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
+                                Label::new(cx, "(init)")
+                                    .width(Stretch(1.0))
+                                    .cursor(CursorIcon::Hand)
+                                    .on_press(|cx| {
+                                        cx.emit(GuiEvent::SelectPreset(0));
+                                        cx.emit(PopupEvent::Close);
+                                    });
+                                Binding::new(cx, GuiData::presets, |cx, presets_lens| {
+                                    let presets = presets_lens.get(cx);
+                                    for (i, preset) in presets.iter().enumerate() {
+                                        let name = preset.name.clone();
+                                        let idx = i + 1;
+                                        Label::new(cx, &name)
+                                            .width(Stretch(1.0))
+                                            .cursor(CursorIcon::Hand)
+                                            .on_press(move |cx| {
+                                                cx.emit(GuiEvent::SelectPreset(idx));
+                                                cx.emit(PopupEvent::Close);
+                                            });
+                                    }
+                                });
+                            })
+                            .height(Pixels(200.0));
+                        },
+                    )
+                    .width(Stretch(1.0));
+                })
+                .col_between(Pixels(4.0))
+                .height(Auto);
+
+                ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
+                    GenericUi::new(cx, GuiData::params);
+                })
+                .width(Percentage(100.0));
+
+                VStack::new(cx, |cx| {
+                    Label::new(cx, "Chat")
+                        .font_size(14.0)
+                        .font_weight(FontWeightKeyword::Bold);
+
+                    ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
+                        Binding::new(cx, GuiData::chat_messages, |cx, msgs_lens| {
+                            let msgs = msgs_lens.get(cx);
+                            for (role, text) in msgs.iter() {
+                                let prefix = match role.as_str() {
+                                    "user" => "You: ",
+                                    "assistant" => "Claude: ",
+                                    "error" => "Error: ",
+                                    _ => "",
+                                };
+                                Label::new(cx, &format!("{prefix}{text}"))
+                                    .width(Stretch(1.0))
+                                    .font_size(12.0);
+                            }
+                        });
+                    })
+                    .height(Pixels(120.0));
+
+                    HStack::new(cx, |cx| {
+                        Textbox::new(cx, GuiData::chat_input)
+                            .on_edit(|cx, text| {
+                                cx.emit(GuiEvent::SetChatInput(text));
+                            })
+                            .on_submit(|cx, _, _| {
+                                cx.emit(GuiEvent::SendChat);
+                            })
+                            .width(Stretch(1.0))
+                            .height(Pixels(28.0));
+
+                        Button::new(
+                            cx,
+                            |cx| cx.emit(GuiEvent::SendChat),
+                            |cx| Label::new(cx, "Send"),
+                        )
+                        .width(Pixels(50.0));
+                    })
+                    .col_between(Pixels(4.0))
+                    .height(Auto);
+                })
+                .height(Auto);
+            })
+            .row_between(Pixels(0.0))
+            .child_left(Stretch(1.0))
+            .child_right(Stretch(1.0));
+
+            ResizeHandle::new(cx);
         },
     )
+}
+
+fn set_param_f32(cx: &mut EventContext, param: &FloatParam, value: f32) {
+    let ptr = param.as_ptr();
+    let normalized = param.preview_normalized(value);
+    cx.emit(RawParamEvent::BeginSetParameter(ptr));
+    cx.emit(RawParamEvent::SetParameterNormalized(ptr, normalized));
+    cx.emit(RawParamEvent::EndSetParameter(ptr));
+}
+
+fn set_param_i32(cx: &mut EventContext, param: &IntParam, value: i32) {
+    let ptr = param.as_ptr();
+    let normalized = param.preview_normalized(value);
+    cx.emit(RawParamEvent::BeginSetParameter(ptr));
+    cx.emit(RawParamEvent::SetParameterNormalized(ptr, normalized));
+    cx.emit(RawParamEvent::EndSetParameter(ptr));
+}
+
+fn set_param_bool(cx: &mut EventContext, param: &BoolParam, value: bool) {
+    let ptr = param.as_ptr();
+    let normalized = param.preview_normalized(value);
+    cx.emit(RawParamEvent::BeginSetParameter(ptr));
+    cx.emit(RawParamEvent::SetParameterNormalized(ptr, normalized));
+    cx.emit(RawParamEvent::EndSetParameter(ptr));
+}
+
+fn set_param_enum<T: Enum + PartialEq>(cx: &mut EventContext, param: &EnumParam<T>, index: i32) {
+    let val = T::from_index(index as usize);
+    let ptr = param.as_ptr();
+    let normalized = param.preview_normalized(val);
+    cx.emit(RawParamEvent::BeginSetParameter(ptr));
+    cx.emit(RawParamEvent::SetParameterNormalized(ptr, normalized));
+    cx.emit(RawParamEvent::EndSetParameter(ptr));
+}
+
+fn apply_preset_vizia(
+    cx: &mut EventContext,
+    pp: &LossyPluginParams,
+    p: &lossy_dsp::LossyParams,
+) {
+    use crate::params::FilterSlope;
+
+    set_param_enum(cx, &pp.mode, p.inverse);
+    set_param_f32(cx, &pp.jitter, p.jitter as f32);
+    set_param_f32(cx, &pp.loss, p.loss as f32);
+    set_param_i32(cx, &pp.window_size, p.window_size);
+    set_param_i32(cx, &pp.hop_divisor, p.hop_divisor);
+    set_param_i32(cx, &pp.n_bands, p.n_bands);
+    set_param_f32(cx, &pp.global_amount, p.global_amount as f32);
+    set_param_f32(cx, &pp.phase_loss, p.phase_loss as f32);
+    set_param_enum(cx, &pp.quantizer, p.quantizer);
+    set_param_f32(cx, &pp.pre_echo, p.pre_echo as f32);
+    set_param_f32(cx, &pp.noise_shape, p.noise_shape as f32);
+    set_param_f32(cx, &pp.weighting, p.weighting as f32);
+    set_param_f32(cx, &pp.hf_threshold, p.hf_threshold as f32);
+    set_param_f32(cx, &pp.transient_ratio, p.transient_ratio as f32);
+    set_param_f32(cx, &pp.slushy_rate, p.slushy_rate as f32);
+    set_param_f32(cx, &pp.crush, p.crush as f32);
+    set_param_f32(cx, &pp.decimate, p.decimate as f32);
+    set_param_enum(cx, &pp.packets, p.packets);
+    set_param_f32(cx, &pp.packet_rate, p.packet_rate as f32);
+    set_param_f32(cx, &pp.packet_size, p.packet_size as f32);
+    set_param_enum(cx, &pp.filter_type, p.filter_type);
+    set_param_f32(cx, &pp.filter_freq, p.filter_freq as f32);
+    set_param_f32(cx, &pp.filter_width, p.filter_width as f32);
+
+    let slope = match p.filter_slope {
+        6 => FilterSlope::Slope6,
+        96 => FilterSlope::Slope96,
+        _ => FilterSlope::Slope24,
+    };
+    let ptr = pp.filter_slope.as_ptr();
+    let norm = pp.filter_slope.preview_normalized(slope);
+    cx.emit(RawParamEvent::BeginSetParameter(ptr));
+    cx.emit(RawParamEvent::SetParameterNormalized(ptr, norm));
+    cx.emit(RawParamEvent::EndSetParameter(ptr));
+
+    set_param_f32(cx, &pp.verb, p.verb as f32);
+    set_param_f32(cx, &pp.decay, p.decay as f32);
+    set_param_enum(cx, &pp.verb_position, p.verb_position);
+    set_param_bool(cx, &pp.freeze, p.freeze != 0);
+    set_param_enum(cx, &pp.freeze_mode, p.freeze_mode);
+    set_param_f32(cx, &pp.freezer, p.freezer as f32);
+    set_param_f32(cx, &pp.gate, p.gate as f32);
+    set_param_f32(cx, &pp.threshold, p.threshold as f32);
+    set_param_f32(cx, &pp.auto_gain, p.auto_gain as f32);
+    set_param_f32(cx, &pp.loss_gain, p.loss_gain as f32);
+    set_param_f32(cx, &pp.wet_dry, p.wet_dry as f32);
 }

@@ -4,7 +4,7 @@
 //! with appropriate ranges, defaults, and display formatting.
 
 use nih_plug::prelude::*;
-use nih_plug_egui::EguiState;
+use nih_plug_vizia::ViziaState;
 use std::sync::Arc;
 
 const SR: f64 = 44100.0;
@@ -54,7 +54,7 @@ pub enum ModWaveform {
 #[derive(Params)]
 pub struct ReverbPluginParams {
     #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
+    pub editor_state: Arc<ViziaState>,
 
     // --- Global ---
     #[id = "feedback_gain"]
@@ -236,7 +236,7 @@ impl Default for ReverbPluginParams {
         let default_delays_ms: [f64; 8] = [29.7, 37.1, 41.3, 47.9, 53.1, 59.3, 67.7, 73.1];
 
         Self {
-            editor_state: EguiState::from_size(620, 780),
+            editor_state: ViziaState::new(|| (760, 900)),
 
             // --- Global ---
             feedback_gain: FloatParam::new(

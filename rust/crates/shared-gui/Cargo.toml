@@ -1,0 +1,12 @@
+[package]
+name = "shared-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+audio-engine = { path = "../audio-engine" }
+vizia = { git = "https://github.com/vizia/vizia.git", branch = "main", default-features = false, features = ["winit", "clipboard"] }
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+realfft.workspace = true

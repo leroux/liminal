@@ -4,7 +4,7 @@
 //! with appropriate ranges, defaults, and display formatting.
 
 use nih_plug::prelude::*;
-use nih_plug_egui::EguiState;
+use nih_plug_vizia::ViziaState;
 use std::sync::Arc;
 
 /// Lossy processing modes.
@@ -73,7 +73,7 @@ pub enum FreezeMode {
 #[derive(Params)]
 pub struct LossyPluginParams {
     #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
+    pub editor_state: Arc<ViziaState>,
 
     // --- Spectral Loss ---
     #[id = "mode"]
@@ -167,7 +167,7 @@ pub struct LossyPluginParams {
 impl Default for LossyPluginParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(620, 780),
+            editor_state: ViziaState::new(|| (620, 780)),
 
             // --- Spectral Loss ---
             mode: EnumParam::new("Mode", SpectralMode::Standard),

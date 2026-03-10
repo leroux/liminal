@@ -9,6 +9,7 @@
 #   make all-plugins  — build both lossy and fractal
 #   make install-all  — install both plugins
 #   make debug        — debug build + bundle lossy
+#   make export-presets — export JSON presets to .vstpreset for Ableton
 #   make clean        — cargo clean
 
 BUNDLE  := target/bundled
@@ -23,7 +24,7 @@ CLAP_DIR := $(HOME)/Library/Audio/Plug-Ins/CLAP
 .PHONY: all release debug install uninstall run clean \
         fractal install-fractal uninstall-fractal run-fractal \
         reverb install-reverb uninstall-reverb run-reverb \
-        all-plugins install-all
+        all-plugins install-all export-presets
 
 all: release
 
@@ -34,7 +35,7 @@ release:
 debug:
 	cargo xtask bundle $(LOSSY)
 
-install: release
+install: release export-presets
 	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
 	@echo "Installing VST3 → $(VST3_DIR)"
 	@rm -rf "$(VST3_DIR)/$(LOSSY).vst3"
@@ -59,7 +60,7 @@ fractal:
 fractal-debug:
 	cargo xtask bundle $(FRACTAL)
 
-install-fractal: fractal
+install-fractal: fractal export-presets
 	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
 	@echo "Installing VST3 → $(VST3_DIR)"
 	@rm -rf "$(VST3_DIR)/$(FRACTAL).vst3"
@@ -84,7 +85,7 @@ reverb:
 reverb-debug:
 	cargo xtask bundle $(REVERB)
 
-install-reverb: reverb
+install-reverb: reverb export-presets
 	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
 	@echo "Installing VST3 → $(VST3_DIR)"
 	@rm -rf "$(VST3_DIR)/$(REVERB).vst3"
@@ -105,7 +106,38 @@ run-reverb: reverb
 # --- All ---
 all-plugins: release fractal reverb
 
-install-all: install install-fractal install-reverb
+install-all: install install-fractal install-reverb export-presets
+
+# --- Universal (fat binary) ---
+universal:
+	cargo build --release -p lossy-plugin -p fractal-plugin -p reverb-plugin \
+		--target aarch64-apple-darwin --target x86_64-apple-darwin
+	cargo xtask bundle $(LOSSY) --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+	cargo xtask bundle $(FRACTAL) --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+	cargo xtask bundle $(REVERB) --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+	@for plugin in $(LOSSY) $(FRACTAL) $(REVERB); do \
+		lib="lib$$(echo $$plugin | tr '-' '_').dylib"; \
+		arm="target/aarch64-apple-darwin/release/$$lib"; \
+		x86="target/x86_64-apple-darwin/release/$$lib"; \
+		lipo -create "$$arm" "$$x86" -output "$(BUNDLE)/$$plugin.vst3/Contents/MacOS/$$plugin"; \
+		lipo -create "$$arm" "$$x86" -output "$(BUNDLE)/$$plugin.clap/Contents/MacOS/$$plugin"; \
+		echo "Universal: $$plugin"; \
+	done
+
+install-universal: universal export-presets
+	@mkdir -p "$(VST3_DIR)" "$(CLAP_DIR)"
+	@for plugin in $(LOSSY) $(FRACTAL) $(REVERB); do \
+		rm -rf "$(VST3_DIR)/$$plugin.vst3"; \
+		cp -r "$(BUNDLE)/$$plugin.vst3" "$(VST3_DIR)/"; \
+		rm -rf "$(CLAP_DIR)/$$plugin.clap"; \
+		cp -r "$(BUNDLE)/$$plugin.clap" "$(CLAP_DIR)/"; \
+		echo "Installed $$plugin"; \
+	done
+	@echo "Done. Restart your DAW to pick up changes."
+
+# --- Presets ---
+export-presets:
+	cargo run -p preset-export --release
 
 clean:
 	cargo clean

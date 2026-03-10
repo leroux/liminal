@@ -106,8 +106,11 @@ impl Plugin for LossyPlugin {
         &mut self,
         buffer: &mut Buffer,
         _aux: &mut AuxiliaryBuffers,
-        _context: &mut impl ProcessContext<Self>,
+        context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        // Report streaming STFT latency to the host for compensation
+        context.set_latency_samples(self.processor.latency() as u32);
+
         let num_samples = buffer.samples();
 
         // Build DSP params from GUI (no Vecs, allocation-free)

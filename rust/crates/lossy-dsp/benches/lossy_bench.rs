@@ -151,10 +151,15 @@ fn bench_processor_vs_allocating(c: &mut Criterion) {
         b.iter(|| render_lossy(black_box(&input), black_box(&params)))
     });
 
-    group.bench_function("prealloc_1s", |b| {
+    group.bench_function("prealloc_256x172", |b| {
         let mut proc = LossyProcessor::new();
-        let mut output = vec![0.0; 44100];
-        b.iter(|| proc.process(black_box(&input), black_box(&params), black_box(&mut output)))
+        let chunk = make_sine(256);
+        let mut output = vec![0.0; 256];
+        b.iter(|| {
+            for _ in 0..172 {
+                proc.process(black_box(&chunk), black_box(&params), black_box(&mut output));
+            }
+        })
     });
 
     group.finish();
@@ -203,21 +208,106 @@ fn bench_stereo_processor(c: &mut Criterion) {
         b.iter(|| render_lossy_stereo(black_box(&left), black_box(&right), black_box(&p)))
     });
 
-    group.bench_function("prealloc_1s", |b| {
+    group.bench_function("prealloc_256x172_stereo", |b| {
         let p = default_params();
         let mut proc = StereoLossyProcessor::new();
-        let mut out_l = vec![0.0; 44100];
-        let mut out_r = vec![0.0; 44100];
+        let chunk_l = make_sine(256);
+        let chunk_r = make_sine(256);
+        let mut out_l = vec![0.0; 256];
+        let mut out_r = vec![0.0; 256];
         b.iter(|| {
-            proc.process_stereo(
-                black_box(&left),
-                black_box(&right),
-                black_box(&p),
-                black_box(&mut out_l),
-                black_box(&mut out_r),
-            )
+            for _ in 0..172 {
+                proc.process_stereo(
+                    black_box(&chunk_l),
+                    black_box(&chunk_r),
+                    black_box(&p),
+                    black_box(&mut out_l),
+                    black_box(&mut out_r),
+                );
+            }
         })
     });
+
+    group.finish();
+}
+
+// --- Conditional code-path benchmarks (streaming processor) ---
+
+fn freeze_params() -> LossyParams {
+    let mut p = default_params();
+    p.freeze = 1;
+    p.freeze_mode = 0; // slushy
+    p.freezer = 1.0;
+    p.slushy_rate = 0.03;
+    p
+}
+
+fn freeze_solid_params() -> LossyParams {
+    let mut p = default_params();
+    p.freeze = 1;
+    p.freeze_mode = 1; // solid
+    p.freezer = 1.0;
+    p
+}
+
+fn post_verb_params() -> LossyParams {
+    let mut p = default_params();
+    p.verb = 0.5;
+    p.decay = 0.6;
+    p.verb_position = 1; // post
+    p
+}
+
+fn notch_steep_params() -> LossyParams {
+    let mut p = default_params();
+    p.filter_type = 2; // notch
+    p.filter_freq = 3000.0;
+    p.filter_width = 0.3;
+    p.filter_slope = 96;
+    p
+}
+
+fn packet_repeat_params() -> LossyParams {
+    let mut p = default_params();
+    p.packets = 2; // repeat mode
+    p.packet_rate = 0.3;
+    p.packet_size = 50.0;
+    p
+}
+
+fn auto_gain_params() -> LossyParams {
+    let mut p = default_params();
+    p.auto_gain = 0.8;
+    p
+}
+
+fn bench_conditional_paths(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lossy_conditionals");
+    let input = make_sine(256);
+    let mut output = vec![0.0; 256];
+
+    let configs: &[(&str, LossyParams)] = &[
+        ("freeze_slushy", freeze_params()),
+        ("freeze_solid", freeze_solid_params()),
+        ("post_verb", post_verb_params()),
+        ("notch_96db", notch_steep_params()),
+        ("packet_repeat", packet_repeat_params()),
+        ("auto_gain", auto_gain_params()),
+        ("spectral_heavy", spectral_heavy_params()),
+        ("full_chain", full_chain_params()),
+        ("bypass", bypass_params()),
+    ];
+
+    for (name, params) in configs {
+        group.bench_function(*name, |b| {
+            let mut proc = LossyProcessor::new();
+            b.iter(|| {
+                for _ in 0..172 {
+                    proc.process(black_box(&input), black_box(params), black_box(&mut output));
+                }
+            })
+        });
+    }
 
     group.finish();
 }
@@ -231,5 +321,6 @@ criterion_group!(
     bench_processor_vs_allocating,
     bench_plugin_realistic,
     bench_stereo_processor,
+    bench_conditional_paths,
 );
 criterion_main!(benches);

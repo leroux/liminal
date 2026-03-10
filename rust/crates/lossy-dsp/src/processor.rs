@@ -1,8 +1,15 @@
 //! Pre-allocated lossy processor for real-time use.
 //!
-//! Unlike `render_lossy` which allocates all buffers per call, `LossyProcessor`
-//! pre-allocates everything at construction time. Zero allocations in the audio
-//! thread. The lofi reverb and freeze states persist across calls.
+//! Uses a **streaming STFT** design: input samples accumulate in a ring buffer
+//! and FFT frames fire only when a full hop's worth of new data arrives.
+//! This eliminates the catastrophic overhead of re-padding each tiny DAW buffer
+//! (e.g., 256 samples) through the full STFT pipeline.
+//!
+//! Latency: `window_size` samples (~46ms at 2048/44100). The plugin reports
+//! this to the DAW for automatic compensation.
+//!
+//! Zero heap allocations after construction. Lofi reverb, freeze, and biquad
+//! states persist across calls.
 
 use crate::params::{LossyParams, SR, SLOPE_OPTIONS};
 use crate::rng::NumpyRng;
@@ -10,33 +17,57 @@ use num_complex::Complex;
 use realfft::RealFftPlanner;
 use std::sync::Arc;
 
-// Maximum sizes based on param ranges and PROCESS_BLOCK=8192.
+// Maximum sizes based on param ranges and typical DAW buffer sizes.
 const MAX_BLOCK: usize = 8192;
 const MAX_WINDOW: usize = 16384;
-const MAX_PADDED: usize = MAX_BLOCK + 2 * MAX_WINDOW;
 const MAX_BINS: usize = MAX_WINDOW / 2 + 1;
 const MAX_BANDS: usize = 65;
-const MAX_FRAMES: usize = 1100;
 const MAX_PACKET_SAMPLES: usize = 8820; // 200ms at 44100
+
+/// OLA buffer size: needs room for read lag + write frontier + one window.
+const OLA_BUF_SIZE: usize = 3 * MAX_WINDOW;
 
 // Comb filter delays for lofi reverb.
 const COMB_DELAYS: [usize; 4] = [1031, 1327, 1657, 1973];
 const ALLPASS_DELAY: usize = 379;
 
-/// Pre-allocated lossy processor. Processes mono audio blocks.
+/// Pre-allocated lossy processor with streaming STFT. Processes mono audio blocks.
 pub struct LossyProcessor {
     // Chain working buffer
     wet: Vec<f64>,
 
-    // Spectral STFT buffers
+    // --- Streaming STFT state ---
     planner: RealFftPlanner<f64>,
     cached_fft: Option<Arc<dyn realfft::RealToComplex<f64>>>,
     cached_ifft: Option<Arc<dyn realfft::ComplexToReal<f64>>>,
     cached_window_size: usize,
     window: Vec<f64>,
-    padded: Vec<f64>,
-    stft_output: Vec<f64>,
-    win_sum: Vec<f64>,
+
+    /// Input accumulator. Holds up to window_size samples; when full, a frame fires.
+    stft_in_buf: Vec<f64>,
+    stft_in_fill: usize,
+
+    /// Overlap-add output buffer (linear, compacted periodically).
+    stft_ola_buf: Vec<f64>,
+    /// Window^2 normalization for OLA (same layout as stft_ola_buf).
+    stft_ola_norm: Vec<f64>,
+    /// Next frame writes OLA starting at this position.
+    stft_ola_write: usize,
+    /// Next output sample reads from this position.
+    stft_ola_read: usize,
+    /// Startup silence counter: output zeros for the first window_size samples.
+    stft_startup_remaining: usize,
+
+    /// Persistent RNG for spectral processing (band gating, jitter).
+    stft_rng: NumpyRng,
+    /// Previous frame energy for 1-frame-delayed pre-echo detection.
+    stft_prev_energy: f64,
+
+    /// Cached STFT params to detect changes requiring streaming state reset.
+    stft_cached_ws: i32,
+    stft_cached_hd: i32,
+
+    // Per-frame FFT scratch buffers
     fft_input: Vec<f64>,
     ifft_output: Vec<f64>,
     spectrum: Vec<Complex<f64>>,
@@ -47,18 +78,22 @@ pub struct LossyProcessor {
     band_edges: Vec<usize>,
     ath_weights: Vec<f64>,
     band_energy: Vec<f64>,
-    energies: Vec<f64>,
-    transient_flags: Vec<bool>,
     envelope: Vec<f64>,
     inv_env: Vec<f64>,
     shaped: Vec<f64>,
-    frozen_spectrum: Option<Vec<f64>>,
+
+    /// Pre-allocated frozen spectrum buffer (avoids allocation on freeze activation).
+    frozen_mag: Vec<f64>,
+    frozen_valid: bool,
+
     cached_stft_window_size: i32,
     cached_n_bands: i32,
-    /// Actual number of edges stored (after dedup, may be < n_bands_param + 1).
     actual_n_edges: usize,
 
-    // Scratch buffer for POST verb path (avoids allocation)
+    // General scratch buffer (used by packet processing)
+    scratch: Vec<f64>,
+
+    // Scratch buffer for POST verb path
     verb_scratch: Vec<f64>,
 
     // Lofi reverb persistent state
@@ -87,9 +122,19 @@ impl LossyProcessor {
             cached_ifft: None,
             cached_window_size: 0,
             window: vec![0.0; MAX_WINDOW],
-            padded: vec![0.0; MAX_PADDED],
-            stft_output: vec![0.0; MAX_PADDED],
-            win_sum: vec![0.0; MAX_PADDED],
+
+            stft_in_buf: vec![0.0; MAX_WINDOW],
+            stft_in_fill: 0,
+            stft_ola_buf: vec![0.0; OLA_BUF_SIZE],
+            stft_ola_norm: vec![0.0; OLA_BUF_SIZE],
+            stft_ola_write: 0,
+            stft_ola_read: 0,
+            stft_startup_remaining: 0, // set on first spectral call
+            stft_rng: NumpyRng::new(42),
+            stft_prev_energy: 0.0,
+            stft_cached_ws: 0,
+            stft_cached_hd: 0,
+
             fft_input: vec![0.0; MAX_WINDOW],
             ifft_output: vec![0.0; MAX_WINDOW],
             spectrum: vec![Complex::new(0.0, 0.0); MAX_BINS],
@@ -100,16 +145,18 @@ impl LossyProcessor {
             band_edges: vec![0; MAX_BANDS + 1],
             ath_weights: vec![0.0; MAX_BANDS],
             band_energy: vec![0.0; MAX_BANDS],
-            energies: vec![0.0; MAX_FRAMES],
-            transient_flags: vec![false; MAX_FRAMES],
             envelope: vec![0.0; MAX_BINS],
             inv_env: vec![0.0; MAX_BINS],
             shaped: vec![0.0; MAX_BINS],
-            frozen_spectrum: None,
+
+            frozen_mag: vec![0.0; MAX_BINS],
+            frozen_valid: false,
+
             cached_stft_window_size: 0,
             cached_n_bands: 0,
             actual_n_edges: 0,
 
+            scratch: vec![0.0; MAX_BLOCK],
             verb_scratch: vec![0.0; MAX_BLOCK],
 
             comb_bufs: [
@@ -137,9 +184,33 @@ impl LossyProcessor {
         }
         self.comb_y1 = [0.0; 4];
         self.allpass_buf.fill(0.0);
-        self.frozen_spectrum = None;
+        self.frozen_valid = false;
         self.biquad_w1 = [0.0; 8];
         self.biquad_w2 = [0.0; 8];
+        self.reset_stft();
+    }
+
+    /// Reset streaming STFT state (called on param changes or full reset).
+    fn reset_stft(&mut self) {
+        self.stft_in_fill = 0;
+        self.stft_ola_buf[..OLA_BUF_SIZE].fill(0.0);
+        self.stft_ola_norm[..OLA_BUF_SIZE].fill(0.0);
+        self.stft_ola_write = 0;
+        self.stft_ola_read = 0;
+        self.stft_startup_remaining = 0; // will be set on next spectral call
+        self.stft_prev_energy = 0.0;
+        self.stft_cached_ws = 0;
+        self.stft_cached_hd = 0;
+    }
+
+    /// Returns the latency in samples introduced by streaming STFT.
+    /// The plugin should report this to the DAW for compensation.
+    pub fn latency(&self) -> usize {
+        if self.cached_window_size > 0 {
+            self.cached_window_size
+        } else {
+            2048 // default before first process call
+        }
     }
 
     /// Process a mono block. `output` must have length >= `input.len()`.
@@ -176,7 +247,7 @@ impl LossyProcessor {
             0.0
         };
 
-        // Spectral processing
+        // Spectral processing (streaming STFT)
         self.spectral_process(n, params);
 
         // Auto gain
@@ -211,7 +282,6 @@ impl LossyProcessor {
 
         // POST verb
         if verb_pos == 1 {
-            // Copy wet to scratch, apply reverb from scratch into wet
             self.verb_scratch[..n].copy_from_slice(&self.wet[..n]);
             self.lofi_reverb_from_scratch(params, n);
         }
@@ -262,12 +332,10 @@ impl LossyProcessor {
         }
     }
 
-    /// Like `lofi_reverb` but reads from `self.verb_scratch` (POST verb path).
     fn lofi_reverb_from_scratch(&mut self, params: &LossyParams, n: usize) {
         let g = params.global_amount;
         let mix = params.verb * g;
         if mix <= 0.0 {
-            // wet already has the data from verb_scratch copy
             return;
         }
         let fb = 0.4 + 0.55 * params.decay;
@@ -300,28 +368,17 @@ impl LossyProcessor {
     }
 
     // -----------------------------------------------------------------------
-    // Spectral processing (STFT)
+    // Streaming STFT spectral processing
     // -----------------------------------------------------------------------
     fn spectral_process(&mut self, n: usize, params: &LossyParams) {
         let g = params.global_amount;
         let loss = params.loss * g;
-        let inverse = params.inverse != 0;
-        let jitter = params.jitter * g;
-        let seed = params.seed;
         let freeze = params.freeze != 0;
-        let freeze_mode = params.freeze_mode;
-        let freezer_blend = params.freezer;
         let phase_loss = params.phase_loss * g;
-        let quantizer_type = params.quantizer;
-        let pre_echo_amount = params.pre_echo * g;
-        let noise_shape = params.noise_shape;
-        let weighting = params.weighting;
-        let hf_threshold = params.hf_threshold;
-        let transient_ratio = params.transient_ratio;
-        let slushy_rate_param = params.slushy_rate;
+        let jitter = params.jitter * g;
 
+        // Fast bypass: no spectral effect active
         if loss <= 0.0 && !freeze && phase_loss <= 0.0 && jitter <= 0.0 {
-            // wet already contains input, nothing to do
             return;
         }
 
@@ -330,6 +387,17 @@ impl LossyProcessor {
         let hop_size = (window_size / hop_divisor).max(1);
         let n_bins = window_size / 2 + 1;
         let n_bands_param = (params.n_bands.max(2)) as usize;
+
+        // Reset streaming state if STFT params changed
+        if params.window_size != self.stft_cached_ws
+            || params.hop_divisor != self.stft_cached_hd
+        {
+            self.reset_stft();
+            self.stft_cached_ws = params.window_size;
+            self.stft_cached_hd = params.hop_divisor;
+            self.stft_startup_remaining = window_size;
+            self.stft_rng = NumpyRng::new(params.seed as u32);
+        }
 
         // Update cached window and FFT plans
         if window_size != self.cached_window_size {
@@ -357,200 +425,244 @@ impl LossyProcessor {
             self.ath_weights[..n_ath].copy_from_slice(&ath[..n_ath]);
         }
 
+        // Feed input samples into the accumulator and fire frames as hops fill
+        let mut fed = 0;
+        while fed < n {
+            let space = window_size - self.stft_in_fill;
+            let chunk = space.min(n - fed);
+            self.stft_in_buf[self.stft_in_fill..self.stft_in_fill + chunk]
+                .copy_from_slice(&self.wet[fed..fed + chunk]);
+            self.stft_in_fill += chunk;
+            fed += chunk;
+
+            if self.stft_in_fill >= window_size {
+                self.run_stft_frame(window_size, hop_size, n_bins, params);
+                // Keep overlap context: shift left by hop_size
+                self.stft_in_buf.copy_within(hop_size..window_size, 0);
+                self.stft_in_fill -= hop_size;
+            }
+        }
+
+        // Read n output samples
+        for i in 0..n {
+            if self.stft_startup_remaining > 0 {
+                self.wet[i] = 0.0;
+                self.stft_startup_remaining -= 1;
+            } else {
+                let pos = self.stft_ola_read;
+                if pos < OLA_BUF_SIZE {
+                    let norm_val = self.stft_ola_norm[pos];
+                    self.wet[i] = if norm_val > 1e-8 {
+                        self.stft_ola_buf[pos] / norm_val
+                    } else {
+                        0.0
+                    };
+                    self.stft_ola_buf[pos] = 0.0;
+                    self.stft_ola_norm[pos] = 0.0;
+                } else {
+                    self.wet[i] = 0.0;
+                }
+                self.stft_ola_read += 1;
+            }
+        }
+
+        // Compact OLA buffer when read position gets large
+        self.maybe_compact_ola(window_size);
+    }
+
+    /// Run one STFT frame: FFT -> spectral processing -> IFFT -> overlap-add.
+    fn run_stft_frame(
+        &mut self,
+        window_size: usize,
+        hop_size: usize,
+        n_bins: usize,
+        params: &LossyParams,
+    ) {
+        let g = params.global_amount;
+        let loss = params.loss * g;
+        let inverse = params.inverse != 0;
+        let jitter = params.jitter * g;
+        let freeze = params.freeze != 0;
+        let freeze_mode = params.freeze_mode;
+        let freezer_blend = params.freezer;
+        let phase_loss = params.phase_loss * g;
+        let quantizer_type = params.quantizer;
+        let pre_echo_amount = params.pre_echo * g;
+        let noise_shape = params.noise_shape;
+        let weighting = params.weighting;
+        let hf_threshold = params.hf_threshold;
+        let slushy_rate_param = params.slushy_rate;
+
         let fft = self.cached_fft.as_ref().unwrap().clone();
         let ifft = self.cached_ifft.as_ref().unwrap().clone();
 
-        // Pad input (reflection)
-        let pad = window_size;
-        let input = &self.wet[..n]; // wet currently holds the input
-        let padded_len = pad_reflect_into(input, pad, &mut self.padded);
+        // Window the frame from stft_in_buf[0..window_size]
+        for j in 0..window_size {
+            self.fft_input[j] = self.stft_in_buf[j] * self.window[j];
+        }
 
-        // Zero output and win_sum
-        self.stft_output[..padded_len].fill(0.0);
-        self.win_sum[..padded_len].fill(0.0);
+        // Forward FFT
+        fft.process(&mut self.fft_input[..window_size], &mut self.spectrum[..n_bins])
+            .unwrap();
 
-        let n_frames = if padded_len >= window_size {
-            (padded_len - window_size) / hop_size + 1
-        } else {
-            0
-        };
+        // Extract magnitude and phase
+        for i in 0..n_bins {
+            self.magnitudes[i] = self.spectrum[i].norm();
+            self.phases[i] = self.spectrum[i].arg();
+        }
 
-        let mut rng = NumpyRng::new(seed as u32);
+        // Pre-echo: 1-frame delayed detection
+        let mut frame_loss = loss;
+        if pre_echo_amount > 0.0 {
+            let mut energy = 0.0_f64;
+            for j in 0..window_size {
+                let s = self.stft_in_buf[j] * self.window[j];
+                energy += s * s;
+            }
+            // If this frame is a transient relative to the previous, boost loss
+            if self.stft_prev_energy > 1e-12
+                && energy / self.stft_prev_energy > params.transient_ratio
+            {
+                frame_loss = (loss + pre_echo_amount * 0.5).min(1.0);
+            }
+            self.stft_prev_energy = energy;
+        }
 
-        // Band edges info (use actual count after dedup, not n_bands_param)
+        // Band edges
         let mut band_edges_copy = [0usize; MAX_BANDS + 1];
         let n_edge_count = self.actual_n_edges.min(band_edges_copy.len());
         band_edges_copy[..n_edge_count].copy_from_slice(&self.band_edges[..n_edge_count]);
         let n_bands = if n_edge_count > 1 { n_edge_count - 1 } else { 0 };
 
-        // Pre-echo detection
-        let has_transients = pre_echo_amount > 0.0 && n_frames > 1;
-        if has_transients {
-            for fi in 0..n_frames.min(MAX_FRAMES) {
-                let start = fi * hop_size;
-                let mut e = 0.0;
-                for j in 0..window_size {
-                    if start + j < padded_len {
-                        let s = self.padded[start + j] * self.window[j];
-                        e += s * s;
-                    }
-                }
-                self.energies[fi] = e;
-            }
-            self.transient_flags[0] = false;
-            for fi in 1..n_frames.min(MAX_FRAMES) {
-                self.transient_flags[fi] =
-                    self.energies[fi - 1] > 1e-12
-                        && self.energies[fi] / self.energies[fi - 1] > transient_ratio;
+        // Magnitude processing
+        if frame_loss > 0.0 {
+            self.standard_degrade(
+                n_bins,
+                frame_loss,
+                &band_edges_copy,
+                n_bands,
+                quantizer_type,
+                noise_shape,
+                weighting,
+            );
+        } else {
+            self.proc_mag[..n_bins].copy_from_slice(&self.magnitudes[..n_bins]);
+        }
+
+        if inverse {
+            for i in 0..n_bins {
+                self.proc_mag[i] = (self.magnitudes[i] - self.proc_mag[i]).max(0.0);
             }
         }
 
-        for fi in 0..n_frames {
-            let start = fi * hop_size;
-
-            // Window the frame
-            for j in 0..window_size {
-                self.fft_input[j] = if start + j < padded_len {
-                    self.padded[start + j] * self.window[j]
-                } else {
-                    0.0
-                };
-            }
-
-            // Forward FFT
-            fft.process(&mut self.fft_input[..window_size], &mut self.spectrum[..n_bins])
-                .unwrap();
-
-            // Extract magnitude and phase
+        // Phase processing
+        if phase_loss > 0.0 {
+            let n_levels = (64.0 * (1.0 - phase_loss)).max(4.0) as i32;
+            let step = 2.0 * std::f64::consts::PI / n_levels as f64;
             for i in 0..n_bins {
-                self.magnitudes[i] = self.spectrum[i].norm();
-                self.phases[i] = self.spectrum[i].arg();
+                self.phases[i] = step * (self.phases[i] / step).round();
             }
-
-            // Pre-echo
-            let mut frame_loss = loss;
-            if has_transients && fi < n_frames - 1 && fi + 1 < MAX_FRAMES {
-                if self.transient_flags[fi + 1] {
-                    frame_loss = (loss + pre_echo_amount * 0.5).min(1.0);
-                }
+        }
+        if jitter > 0.0 {
+            let pi = std::f64::consts::PI;
+            for i in 0..n_bins {
+                let noise = self.stft_rng.uniform(-pi, pi) * jitter;
+                self.phases[i] += noise;
             }
+        }
 
-            // Magnitude processing
-            if frame_loss > 0.0 {
-                self.standard_degrade(
-                    n_bins,
-                    frame_loss,
-                    &mut rng,
-                    &band_edges_copy,
-                    n_bands,
-                    quantizer_type,
-                    noise_shape,
-                    weighting,
-                );
+        // HF limiting
+        if frame_loss > hf_threshold {
+            let cutoff = ((n_bins as f64 * (1.0 - 0.6 * frame_loss)) as usize).max(n_bins / 8);
+            let hf_range = if hf_threshold < 1.0 {
+                1.0 - hf_threshold
             } else {
-                self.proc_mag[..n_bins].copy_from_slice(&self.magnitudes[..n_bins]);
+                1.0
+            };
+            let mult = ((1.0 - (frame_loss - hf_threshold) / hf_range).max(0.0)).min(1.0);
+            for i in cutoff..n_bins {
+                self.proc_mag[i] *= mult;
             }
+        }
 
-            if inverse {
+        // Freeze
+        if freeze {
+            if !self.frozen_valid {
+                self.frozen_mag[..n_bins].copy_from_slice(&self.proc_mag[..n_bins]);
+                self.frozen_valid = true;
+            }
+            if freeze_mode != 1 {
+                // Slushy: drift frozen spectrum toward live signal
                 for i in 0..n_bins {
-                    self.proc_mag[i] = (self.magnitudes[i] - self.proc_mag[i]).max(0.0);
+                    self.frozen_mag[i] = (1.0 - slushy_rate_param) * self.frozen_mag[i]
+                        + slushy_rate_param * self.proc_mag[i];
                 }
             }
-
-            // Phase processing
-            if phase_loss > 0.0 {
-                let n_levels = (64.0 * (1.0 - phase_loss)).max(4.0) as i32;
-                let step = 2.0 * std::f64::consts::PI / n_levels as f64;
-                for i in 0..n_bins {
-                    self.phases[i] = step * (self.phases[i] / step).round();
-                }
-            }
-            if jitter > 0.0 {
-                let pi = std::f64::consts::PI;
-                for i in 0..n_bins {
-                    let noise = rng.uniform(-pi, pi) * jitter;
-                    self.phases[i] += noise;
-                }
-            }
-
-            // HF limiting
-            if frame_loss > hf_threshold {
-                let cutoff = ((n_bins as f64 * (1.0 - 0.6 * frame_loss)) as usize).max(n_bins / 8);
-                let hf_range = if hf_threshold < 1.0 {
-                    1.0 - hf_threshold
-                } else {
-                    1.0
-                };
-                let mult = ((1.0 - (frame_loss - hf_threshold) / hf_range).max(0.0)).min(1.0);
-                for i in cutoff..n_bins {
-                    self.proc_mag[i] *= mult;
-                }
-            }
-
-            // Freeze
-            if freeze {
-                if self.frozen_spectrum.is_none() {
-                    self.frozen_spectrum = Some(self.proc_mag[..n_bins].to_vec());
-                }
-                let frozen = self.frozen_spectrum.as_mut().unwrap();
-                if freeze_mode != 1 {
-                    // Slushy
-                    for i in 0..n_bins.min(frozen.len()) {
-                        frozen[i] = (1.0 - slushy_rate_param) * frozen[i]
-                            + slushy_rate_param * self.proc_mag[i];
-                    }
-                }
-                for i in 0..n_bins.min(frozen.len()) {
-                    self.proc_mag[i] =
-                        freezer_blend * frozen[i] + (1.0 - freezer_blend) * self.proc_mag[i];
-                }
-            }
-
-            // Reconstruct
             for i in 0..n_bins {
-                self.spectrum[i] = Complex::from_polar(self.proc_mag[i], self.phases[i]);
-            }
-            self.spectrum[0] = Complex::new(self.spectrum[0].re, 0.0);
-            if n_bins > 1 {
-                let last = n_bins - 1;
-                self.spectrum[last] = Complex::new(self.spectrum[last].re, 0.0);
-            }
-
-            // Inverse FFT
-            ifft.process(
-                &mut self.spectrum[..n_bins],
-                &mut self.ifft_output[..window_size],
-            )
-            .unwrap();
-
-            let norm = 1.0 / window_size as f64;
-            for j in 0..window_size {
-                if start + j < padded_len {
-                    self.stft_output[start + j] += self.ifft_output[j] * norm * self.window[j];
-                    self.win_sum[start + j] += self.window[j] * self.window[j];
-                }
+                self.proc_mag[i] =
+                    freezer_blend * self.frozen_mag[i] + (1.0 - freezer_blend) * self.proc_mag[i];
             }
         }
 
-        // Normalize and remove padding
-        for i in 0..padded_len {
-            if self.win_sum[i] < 1e-8 {
-                self.win_sum[i] = 1.0;
-            }
-            self.stft_output[i] /= self.win_sum[i];
+        // Reconstruct complex spectrum
+        for i in 0..n_bins {
+            self.spectrum[i] = Complex::from_polar(self.proc_mag[i], self.phases[i]);
+        }
+        self.spectrum[0] = Complex::new(self.spectrum[0].re, 0.0);
+        if n_bins > 1 {
+            let last = n_bins - 1;
+            self.spectrum[last] = Complex::new(self.spectrum[last].re, 0.0);
         }
 
-        // Copy result back to wet (remove padding)
-        for i in 0..n {
-            self.wet[i] = self.stft_output[pad + i];
+        // Inverse FFT
+        ifft.process(
+            &mut self.spectrum[..n_bins],
+            &mut self.ifft_output[..window_size],
+        )
+        .unwrap();
+
+        // Overlap-add into OLA buffer
+        let norm = 1.0 / window_size as f64;
+        let write_pos = self.stft_ola_write;
+        for j in 0..window_size {
+            let pos = write_pos + j;
+            if pos < OLA_BUF_SIZE {
+                self.stft_ola_buf[pos] += self.ifft_output[j] * norm * self.window[j];
+                self.stft_ola_norm[pos] += self.window[j] * self.window[j];
+            }
         }
+        self.stft_ola_write += hop_size;
+    }
+
+    /// Compact OLA buffer to prevent unbounded growth.
+    fn maybe_compact_ola(&mut self, window_size: usize) {
+        if self.stft_ola_read < MAX_WINDOW {
+            return;
+        }
+        let shift = self.stft_ola_read;
+        let end = (self.stft_ola_write + window_size).min(OLA_BUF_SIZE);
+        if end <= shift {
+            // Nothing to keep
+            self.stft_ola_buf[..end].fill(0.0);
+            self.stft_ola_norm[..end].fill(0.0);
+            self.stft_ola_write = 0;
+            self.stft_ola_read = 0;
+            return;
+        }
+        let len = end - shift;
+        self.stft_ola_buf.copy_within(shift..end, 0);
+        self.stft_ola_norm.copy_within(shift..end, 0);
+        // Clear vacated tail
+        self.stft_ola_buf[len..len + shift.min(OLA_BUF_SIZE - len)].fill(0.0);
+        self.stft_ola_norm[len..len + shift.min(OLA_BUF_SIZE - len)].fill(0.0);
+        self.stft_ola_write -= shift;
+        self.stft_ola_read = 0;
     }
 
     fn standard_degrade(
         &mut self,
         n_bins: usize,
         loss: f64,
-        rng: &mut NumpyRng,
         band_edges: &[usize],
         n_bands: usize,
         quantizer_type: i32,
@@ -613,7 +725,7 @@ impl LossyProcessor {
             }
         }
 
-        // Band gating
+        // Band gating (uses persistent stft_rng)
         for b in 0..n_bands {
             let lo = band_edges[b];
             let hi = band_edges[b + 1];
@@ -633,8 +745,8 @@ impl LossyProcessor {
             let ath_factor =
                 (1.0 - weighting) * 0.75 + weighting * (0.5 + 0.5 * self.ath_weights[b]);
             let mut gate_prob = loss * 0.6 * (1.0 - relative) * ath_factor;
-            gate_prob += rng.random() * loss * 0.2;
-            if rng.random() < gate_prob {
+            gate_prob += self.stft_rng.random() * loss * 0.2;
+            if self.stft_rng.random() < gate_prob {
                 let lo = band_edges[b];
                 let hi = band_edges[b + 1];
                 for i in lo..hi {
@@ -744,14 +856,11 @@ impl LossyProcessor {
         let mut in_bad = false;
         let mut prev_bad = false;
 
-        // Save original for crossfade
-        // We need a copy of the input for crossfade blending
-        // Use stft_output as scratch (it's not being used here)
-        self.stft_output[..n].copy_from_slice(&self.wet[..n]);
+        // Save original for crossfade (use scratch buffer)
+        self.scratch[..n].copy_from_slice(&self.wet[..n]);
 
         let xfade = (0.003 * SR) as usize;
         let xfade = xfade.min(packet_samples / 4);
-        // Compute fade windows into pre-allocated buffers
         for i in 0..xfade {
             let full_len = xfade * 2;
             self.packet_fade_in[i] =
@@ -782,7 +891,7 @@ impl LossyProcessor {
                     for i in 0..xf {
                         self.wet[start + i] *= self.packet_fade_in[i];
                         self.wet[start + i] +=
-                            self.stft_output[start + i] * self.packet_fade_out[xfade - xf + i];
+                            self.scratch[start + i] * self.packet_fade_out[xfade - xf + i];
                     }
                 }
 
@@ -801,7 +910,7 @@ impl LossyProcessor {
                 }
 
                 for i in 0..chunk_len.min(MAX_PACKET_SAMPLES) {
-                    self.packet_last_good[i] = self.stft_output[start + i];
+                    self.packet_last_good[i] = self.scratch[start + i];
                 }
                 prev_bad = false;
                 if rng.random() < p_g2b {
@@ -933,6 +1042,11 @@ impl StereoLossyProcessor {
         self.proc_r.reset();
     }
 
+    /// Returns the latency in samples (same for both channels).
+    pub fn latency(&self) -> usize {
+        self.proc_l.latency()
+    }
+
     pub fn process_stereo(
         &mut self,
         left: &[f64],
@@ -956,30 +1070,6 @@ fn rms(audio: &[f64]) -> f64 {
     }
     let sum: f64 = audio.iter().map(|x| x * x).sum();
     (sum / audio.len() as f64).sqrt()
-}
-
-/// Reflection-pad `audio` into `out`, returns padded length.
-fn pad_reflect_into(audio: &[f64], pad: usize, out: &mut [f64]) -> usize {
-    let n = audio.len();
-    let total = n + 2 * pad;
-    debug_assert!(out.len() >= total);
-
-    if n > pad {
-        for i in 0..pad {
-            let idx = (pad - 1 - i + 1) % n;
-            out[i] = audio[idx];
-        }
-        out[pad..pad + n].copy_from_slice(audio);
-        for i in 0..pad {
-            let idx = n.saturating_sub(2).saturating_sub(i % n.max(1));
-            out[pad + n + i] = audio[idx.min(n - 1)];
-        }
-    } else {
-        out[..pad].fill(0.0);
-        out[pad..pad + n].copy_from_slice(audio);
-        out[pad + n..total].fill(0.0);
-    }
-    total
 }
 
 fn compute_band_edges(n_bins: usize, n_bands_param: usize) -> (Vec<usize>, usize) {
@@ -1039,26 +1129,26 @@ mod tests {
     }
 
     #[test]
-    fn test_processor_matches_render() {
-        let audio = make_sine(4096);
+    fn test_processor_output_finite() {
+        // With streaming STFT, output won't match render_lossy exactly
+        // (different RNG state, pre-echo handling, startup latency).
+        // Instead verify output is finite and has reasonable energy.
+        let audio = make_sine(8192);
         let params = LossyParams::default();
 
-        let expected = crate::chain::render_lossy(&audio, &params);
-
         let mut proc = LossyProcessor::new();
-        let mut output = vec![0.0; 4096];
+        let mut output = vec![0.0; 8192];
         proc.process(&audio, &params, &mut output);
 
-        assert_eq!(expected.len(), output.len());
-        let max_diff: f64 = expected
-            .iter()
-            .zip(output.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f64, f64::max);
-        assert!(
-            max_diff < 1e-10,
-            "Processor output differs from render_lossy: max_diff={max_diff}"
-        );
+        assert!(output.iter().all(|x| x.is_finite()),
+            "Output contains non-finite values");
+
+        // After startup (first window_size samples), output should have energy
+        let ws = params.window_size as usize;
+        let post_startup = &output[ws..];
+        let energy: f64 = post_startup.iter().map(|x| x * x).sum();
+        assert!(energy > 0.01,
+            "Post-startup output has no energy: {energy}");
     }
 
     #[test]
@@ -1112,5 +1202,158 @@ mod tests {
             proc.process(&audio, &params, &mut output);
         }
         assert!(output.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn test_processor_latency() {
+        let proc = LossyProcessor::new();
+        // Before first call, returns default 2048
+        assert_eq!(proc.latency(), 2048);
+    }
+
+    #[test]
+    fn test_streaming_small_buffers_produce_output() {
+        // Simulate DAW with 256-sample buffers. After startup, output should have energy.
+        let params = LossyParams::default();
+        let ws = params.window_size as usize; // 2048
+        let mut proc = LossyProcessor::new();
+
+        let chunk = make_sine(256);
+        let mut output = vec![0.0; 256];
+
+        // Feed enough chunks to get past startup
+        let n_startup_chunks = (ws / 256) + 4; // well past startup
+        for _ in 0..n_startup_chunks {
+            proc.process(&chunk, &params, &mut output);
+        }
+
+        // Now output should have energy
+        let energy: f64 = output.iter().map(|x| x * x).sum();
+        assert!(energy > 1e-6,
+            "Small-buffer streaming should produce output after startup, energy={energy}");
+    }
+
+    #[test]
+    fn test_streaming_matches_energy_of_batch() {
+        // Compare total energy of streaming vs batch processing (not sample-exact).
+        let audio = make_sine(44100);
+        let params = LossyParams::default();
+        let ws = params.window_size as usize;
+
+        // Batch: single large call via render_lossy
+        let batch_out = crate::chain::render_lossy(&audio, &params);
+        let batch_energy: f64 = batch_out[ws..].iter().map(|x| x * x).sum();
+
+        // Streaming: small buffer calls
+        let mut proc = LossyProcessor::new();
+        let mut streaming_out = vec![0.0_f64; 44100];
+        let chunk_size = 256;
+        for start in (0..44100).step_by(chunk_size) {
+            let end = (start + chunk_size).min(44100);
+            let n = end - start;
+            proc.process(&audio[start..end], &params, &mut streaming_out[start..start + n]);
+        }
+        let streaming_energy: f64 = streaming_out[ws..].iter().map(|x| x * x).sum();
+
+        // Energies should be in the same ballpark (within 10x)
+        let ratio = if batch_energy > streaming_energy {
+            batch_energy / streaming_energy.max(1e-12)
+        } else {
+            streaming_energy / batch_energy.max(1e-12)
+        };
+        assert!(ratio < 10.0,
+            "Energy mismatch: batch={batch_energy:.4}, streaming={streaming_energy:.4}, ratio={ratio:.2}");
+    }
+
+    #[test]
+    fn test_streaming_no_crackle() {
+        // Process a sine wave with minimal loss through the STFT and check
+        // for discontinuities (crackle = large sample-to-sample jumps).
+        let mut proc = LossyProcessor::new();
+        let mut params = LossyParams::default();
+        params.loss = 0.001; // minimal, but forces STFT path
+        params.crush = 0.0;
+        params.decimate = 0.0;
+        params.verb = 0.0;
+        params.filter_type = 0;
+        params.packets = 0;
+        params.gate = 0.0;
+        params.wet_dry = 1.0;
+
+        let buf_size = 256;
+        let n_calls = 500; // ~2.9 seconds
+        let mut all_output = Vec::with_capacity(buf_size * n_calls);
+        let mut output = vec![0.0; buf_size];
+        let mut phase = 0.0_f64;
+
+        for _ in 0..n_calls {
+            let input: Vec<f64> = (0..buf_size)
+                .map(|_| {
+                    let s = (phase * 2.0 * std::f64::consts::PI).sin();
+                    phase += 440.0 / SR;
+                    s
+                })
+                .collect();
+            proc.process(&input, &params, &mut output);
+            all_output.extend_from_slice(&output);
+        }
+
+        // Skip startup silence (window_size + margin)
+        let skip = 2048 + 512;
+        let samples = &all_output[skip..];
+
+        // A 440Hz sine at 44100 has max delta ≈ 0.063.
+        // Allow generous headroom but catch real crackles.
+        let crackle_threshold = 0.3;
+        let mut n_crackles = 0;
+        for i in 1..samples.len() {
+            let jump = (samples[i] - samples[i - 1]).abs();
+            if jump > crackle_threshold {
+                n_crackles += 1;
+            }
+        }
+        assert_eq!(n_crackles, 0,
+            "Detected {n_crackles} crackles (jumps > {crackle_threshold}) in streaming STFT output");
+    }
+
+    #[test]
+    fn test_streaming_no_crackle_default_preset() {
+        // Same test with default loss=0.5 — the most common use case.
+        let mut proc = LossyProcessor::new();
+        let params = LossyParams::default(); // loss=0.5
+
+        let buf_size = 256;
+        let n_calls = 500;
+        let mut all_output = Vec::with_capacity(buf_size * n_calls);
+        let mut output = vec![0.0; buf_size];
+        let mut phase = 0.0_f64;
+
+        for _ in 0..n_calls {
+            let input: Vec<f64> = (0..buf_size)
+                .map(|_| {
+                    let s = (phase * 2.0 * std::f64::consts::PI).sin();
+                    phase += 440.0 / SR;
+                    s
+                })
+                .collect();
+            proc.process(&input, &params, &mut output);
+            all_output.extend_from_slice(&output);
+        }
+
+        let skip = 2048 + 512;
+        let samples = &all_output[skip..];
+
+        // With loss=0.5 the signal is degraded but shouldn't have sharp clicks.
+        // The spectral degradation can cause jumps, so use a more generous threshold.
+        let crackle_threshold = 0.8;
+        let mut n_crackles = 0;
+        for i in 1..samples.len() {
+            let jump = (samples[i] - samples[i - 1]).abs();
+            if jump > crackle_threshold {
+                n_crackles += 1;
+            }
+        }
+        assert_eq!(n_crackles, 0,
+            "Detected {n_crackles} crackles (jumps > {crackle_threshold}) with default preset");
     }
 }

@@ -1,0 +1,19 @@
+[package]
+name = "reverb-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "reverb-app"
+path = "src/main.rs"
+
+[dependencies]
+reverb-dsp = { path = "../reverb-dsp" }
+shared-gui = { path = "../shared-gui" }
+audio-engine = { path = "../audio-engine" }
+vizia = { git = "https://github.com/vizia/vizia.git", branch = "main", default-features = false, features = ["winit", "clipboard"] }
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+rfd.workspace = true
+crossbeam-channel.workspace = true

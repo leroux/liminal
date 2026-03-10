@@ -13,6 +13,13 @@ members = [
     "crates/reverb-plugin",
     "crates/explore-dsp",
     "crates/explore-cli",
+    "crates/claudewire",
+    "crates/preset-export",
+    # "crates/audio-engine",
+    # "crates/shared-gui",
+    # "crates/reverb-app",
+    # "crates/lossy-app",
+    # "crates/fractal-app",
     "xtask",
 ]
 
@@ -30,10 +37,16 @@ criterion = { version = "0.5", features = ["html_reports"] }
 rosc = "0.11"
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
 nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+nih_plug_vizia = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+cpal = "0.15"
+rubato = "0.15"
+rfd = "0.15"
+crossbeam-channel = "0.5"
 
 [patch."https://github.com/robbert-vdh/nih-plug.git"]
 nih_plug = { path = "patches/nih-plug" }
 nih_plug_egui = { path = "patches/nih-plug/nih_plug_egui" }
+nih_plug_vizia = { path = "patches/nih-plug/nih_plug_vizia" }
 
 [patch."https://github.com/RustAudio/baseview.git"]
 baseview = { path = "patches/baseview" }

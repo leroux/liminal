@@ -4,7 +4,7 @@
 //! with appropriate ranges, defaults, and display formatting.
 
 use nih_plug::prelude::*;
-use nih_plug_egui::EguiState;
+use nih_plug_vizia::ViziaState;
 use std::sync::Arc;
 
 /// Interpolation mode.
@@ -43,7 +43,7 @@ pub enum PostFilterType {
 #[derive(Params)]
 pub struct FractalPluginParams {
     #[persist = "editor-state"]
-    pub editor_state: Arc<EguiState>,
+    pub editor_state: Arc<ViziaState>,
 
     // --- Core Fractal ---
     #[id = "num_scales"]
@@ -137,7 +137,7 @@ pub struct FractalPluginParams {
 impl Default for FractalPluginParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(600, 820),
+            editor_state: ViziaState::new(|| (600, 820)),
 
             // --- Core Fractal ---
             num_scales: IntParam::new("Scales", 3, IntRange::Linear { min: 2, max: 8 }),
