@@ -1,58 +1,18 @@
 {
-  "delay_times": [
-    953,
-    1193,
-    1327,
-    1543,
-    1709,
-    1907,
-    2179,
-    2351
-  ],
-  "damping_coeffs": [
-    0.42,
-    0.45,
-    0.42,
-    0.48,
-    0.42,
-    0.45,
-    0.48,
-    0.42
-  ],
-  "feedback_gain": 0.83,
-  "input_gains": [
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125
-  ],
-  "output_gains": [
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0
-  ],
-  "pre_delay": 441,
+  "size": 0.47547046412245786,
+  "decay": 0.83,
+  "brightness": 0.5342105263157895,
   "diffusion": 0.58,
-  "diffusion_stages": 4,
-  "diffusion_delays": [
-    142,
-    213,
-    315,
-    434
-  ],
-  "wet_dry": 0.38,
+  "mix": 0.38,
   "saturation": 0.12,
+  "pre_delay_ms": 10.0,
+  "stereo_width": 1.0,
   "matrix_type": "hadamard",
-  "matrix_seed": 42,
+  "mod_rate": 0.0,
+  "mod_depth": 0.0,
+  "mod_character": 0.0,
+  "mod_spread": 0.0,
+  "mod_waveform": 0,
   "_meta": {
     "category": "Room",
     "description": "VintageVerb 1979 chamber \u2014 retro digital character"

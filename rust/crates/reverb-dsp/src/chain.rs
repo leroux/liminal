@@ -5,13 +5,13 @@
 
 use crate::fdn::render_fdn_static;
 use crate::fdn_mod::render_fdn_mod;
-use crate::params::ReverbParams;
+use crate::params::FdnParams;
 
 /// Render mono input through the FDN reverb.
 ///
 /// Automatically routes to static or modulated engine based on params.
 /// Returns interleaved stereo output [L0, R0, L1, R1, ...].
-pub fn render_fdn(input: &[f64], params: &ReverbParams) -> Vec<f64> {
+pub fn render_fdn(input: &[f64], params: &FdnParams) -> Vec<f64> {
     let mut params = params.clone();
     params.normalize();
 
@@ -26,7 +26,7 @@ pub fn render_fdn(input: &[f64], params: &ReverbParams) -> Vec<f64> {
 ///
 /// Processes each channel independently with wet_dry=1.0, then mixes.
 /// Returns (left_out, right_out) vectors.
-pub fn render_fdn_stereo(left: &[f64], right: &[f64], params: &ReverbParams) -> (Vec<f64>, Vec<f64>) {
+pub fn render_fdn_stereo(left: &[f64], right: &[f64], params: &FdnParams) -> (Vec<f64>, Vec<f64>) {
     let mut params = params.clone();
     params.normalize();
 
@@ -73,7 +73,7 @@ mod tests {
     fn test_render_fdn_mono() {
         let mut input = vec![0.0; 4410];
         input[0] = 1.0;
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
         let output = render_fdn(&input, &params);
         assert_eq!(output.len(), 4410 * 2);
     }
@@ -84,7 +84,7 @@ mod tests {
         let mut right = vec![0.0; 4410];
         left[0] = 1.0;
         right[100] = 1.0;
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
         let (out_l, out_r) = render_fdn_stereo(&left, &right, &params);
         assert_eq!(out_l.len(), 4410);
         assert_eq!(out_r.len(), 4410);
@@ -94,7 +94,7 @@ mod tests {
     fn test_modulation_routing() {
         let mut input = vec![0.0; 4410];
         input[0] = 1.0;
-        let mut params = ReverbParams::default();
+        let mut params = FdnParams::default();
         // No modulation -> static path
         let out_static = render_fdn(&input, &params);
         // Add modulation -> mod path

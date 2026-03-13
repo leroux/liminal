@@ -209,10 +209,10 @@ fn modulation_section(cx: &mut Context) {
     .padding(Pixels(8.0));
 }
 
-/// Custom lenses to extract f64 fields from ReverbParams.
+/// Custom lenses to extract f64 fields from FdnParams.
 #[allow(non_snake_case, non_camel_case_types)]
 mod ParamsLens {
-    use reverb_dsp::ReverbParams;
+    use reverb_dsp::FdnParams;
     use vizia::prelude::*;
 
     macro_rules! param_lens {
@@ -221,7 +221,7 @@ mod ParamsLens {
             pub struct $name;
 
             impl Lens for $name {
-                type Source = ReverbParams;
+                type Source = FdnParams;
                 type Target = $ty;
 
                 fn view<'a>(

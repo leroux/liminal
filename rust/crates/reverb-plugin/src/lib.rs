@@ -26,7 +26,7 @@ pub struct ReverbPlugin {
     output_l: Vec<f64>,
     output_r: Vec<f64>,
     /// Cached DSP params — avoids re-allocating Vecs every process call.
-    cached_dsp_params: reverb_dsp::ReverbParams,
+    cached_dsp_params: reverb_dsp::FdnParams,
 }
 
 /// Maximum buffer size we'll see from a host (pre-allocate for this).
@@ -42,7 +42,7 @@ impl Default for ReverbPlugin {
             input_r: vec![0.0; MAX_BUFFER_SIZE],
             output_l: vec![0.0; MAX_BUFFER_SIZE],
             output_r: vec![0.0; MAX_BUFFER_SIZE],
-            cached_dsp_params: reverb_dsp::ReverbParams::default(),
+            cached_dsp_params: reverb_dsp::FdnParams::default(),
         }
     }
 }

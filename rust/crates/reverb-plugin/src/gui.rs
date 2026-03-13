@@ -282,7 +282,7 @@ fn set_param_i32(cx: &mut EventContext, param: &IntParam, value: i32) {
 fn apply_preset_vizia(
     cx: &mut EventContext,
     pp: &ReverbPluginParams,
-    p: &reverb_dsp::ReverbParams,
+    p: &reverb_dsp::FdnParams,
 ) {
     use crate::params::MatrixType;
 

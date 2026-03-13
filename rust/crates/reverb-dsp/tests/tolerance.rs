@@ -1,7 +1,7 @@
 //! Tolerance tests for reverb-dsp optimizations.
 
 use reverb_dsp::chain::render_fdn;
-use reverb_dsp::params::{ReverbParams, SR};
+use reverb_dsp::params::{FdnParams, SR};
 
 fn make_sine(len: usize) -> Vec<f64> {
     (0..len)
@@ -27,14 +27,14 @@ const TOL: f64 = 1e-6;
 #[test]
 fn golden_default() {
     let input = make_sine(4410);
-    let out = render_fdn(&input, &ReverbParams::default());
+    let out = render_fdn(&input, &FdnParams::default());
     check(&out, &Golden { rms: 3.604326840177436e-1, peak: 6.307209438728478e-1, head: 3.188891636739190e1, tail: -3.809016336292755e1 }, TOL, "default");
 }
 
 #[test]
 fn golden_high_feedback() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.feedback_gain = 0.95;
     let out = render_fdn(&input, &p);
     check(&out, &Golden { rms: 3.606259155428777e-1, peak: 6.362778525907040e-1, head: 3.188891636739190e1, tail: -3.829076910300675e1 }, TOL, "high_feedback");
@@ -43,7 +43,7 @@ fn golden_high_feedback() {
 #[test]
 fn golden_low_feedback() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.feedback_gain = 0.3;
     let out = render_fdn(&input, &p);
     check(&out, &Golden { rms: 3.593997093881169e-1, peak: 5.995908237994825e-1, head: 3.188891636739190e1, tail: -3.696610757498586e1 }, TOL, "low_feedback");
@@ -52,7 +52,7 @@ fn golden_low_feedback() {
 #[test]
 fn golden_with_diffusion() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.diffusion = 0.8;
     let out = render_fdn(&input, &p);
     check(&out, &Golden { rms: 3.321597298624784e-1, peak: 4.999998731289434e-1, head: 3.188891636739190e1, tail: -2.793533592930980e1 }, TOL, "with_diffusion");
@@ -61,7 +61,7 @@ fn golden_with_diffusion() {
 #[test]
 fn golden_with_saturation() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.saturation = 0.5;
     let out = render_fdn(&input, &p);
     check(&out, &Golden { rms: 3.604246862492364e-1, peak: 6.305460842208919e-1, head: 3.188891636739190e1, tail: -3.808328540778420e1 }, TOL, "with_saturation");
@@ -70,7 +70,7 @@ fn golden_with_saturation() {
 #[test]
 fn golden_high_damping() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.damping_coeffs = vec![0.8; 8];
     let out = render_fdn(&input, &p);
     check(&out, &Golden { rms: 3.601055885211507e-1, peak: 6.284377015838321e-1, head: 3.188891636739190e1, tail: -3.798767916816816e1 }, TOL, "high_damping");
@@ -79,7 +79,7 @@ fn golden_high_damping() {
 #[test]
 fn golden_modulated() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.mod_master_rate = 1.0;
     p.mod_depth_delay = vec![0.5; 8];
     let out = render_fdn(&input, &p);
@@ -89,7 +89,7 @@ fn golden_modulated() {
 #[test]
 fn golden_full_effects() {
     let input = make_sine(4410);
-    let mut p = ReverbParams::default();
+    let mut p = FdnParams::default();
     p.feedback_gain = 0.7;
     p.diffusion = 0.6;
     p.saturation = 0.3;
@@ -103,7 +103,7 @@ fn golden_full_effects() {
 #[test]
 fn output_safety() {
     let input = make_sine(4410);
-    let params = ReverbParams::default();
+    let params = FdnParams::default();
     let out = render_fdn(&input, &params);
     assert_eq!(out.len(), input.len() * 2);
     assert!(out.iter().all(|x| x.is_finite()));
@@ -112,7 +112,7 @@ fn output_safety() {
 #[test]
 fn deterministic() {
     let input = make_sine(4410);
-    let params = ReverbParams::default();
+    let params = FdnParams::default();
     let out1 = render_fdn(&input, &params);
     let out2 = render_fdn(&input, &params);
     for (i, (&a, &b)) in out1.iter().zip(out2.iter()).enumerate() {

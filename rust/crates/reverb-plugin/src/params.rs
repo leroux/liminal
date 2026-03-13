@@ -410,12 +410,12 @@ impl Default for ReverbPluginParams {
 
 impl ReverbPluginParams {
     /// Convert current nih-plug param values to a reverb-dsp ReverbParams struct.
-    pub fn to_dsp_params(&self) -> reverb_dsp::ReverbParams {
+    pub fn to_dsp_params(&self) -> reverb_dsp::FdnParams {
         let mod_dd = self.mod_depth_delay.value() as f64;
         let mod_da = self.mod_depth_damping.value() as f64;
         let mod_do = self.mod_depth_output.value() as f64;
 
-        reverb_dsp::ReverbParams {
+        reverb_dsp::FdnParams {
             delay_times: vec![
                 self.delay_time_1.value(),
                 self.delay_time_2.value(),

@@ -3,12 +3,12 @@
 //! Port of `reverb/engine/numba_fdn.py`.
 
 use crate::matrix;
-use crate::params::{ReverbParams, SR, N};
+use crate::params::{FdnParams, SR, N};
 
 /// Render mono input through the static FDN, returning stereo (interleaved L,R pairs).
 ///
 /// Output length = input_len * 2 (interleaved stereo).
-pub fn render_fdn_static(input: &[f64], params: &ReverbParams) -> Vec<f64> {
+pub fn render_fdn_static(input: &[f64], params: &FdnParams) -> Vec<f64> {
     let n_samples = input.len();
 
     // --- Build feedback matrix ---
@@ -168,7 +168,7 @@ pub fn render_fdn_static(input: &[f64], params: &ReverbParams) -> Vec<f64> {
 }
 
 /// Build the feedback matrix from params. Returns (flat_matrix, is_householder).
-pub fn build_matrix(params: &ReverbParams) -> (Vec<f64>, bool) {
+pub fn build_matrix(params: &FdnParams) -> (Vec<f64>, bool) {
     if params.matrix_type == "custom" {
         if let Some(ref custom) = params.matrix_custom {
             let mut flat = Vec::with_capacity(N * N);
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn test_silence_in_silence_out() {
         let input = vec![0.0; 1000];
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
         let output = render_fdn_static(&input, &params);
         assert_eq!(output.len(), 2000);
         for &s in &output {
@@ -209,7 +209,7 @@ mod tests {
     fn test_impulse_response() {
         let mut input = vec![0.0; 44100];
         input[0] = 1.0;
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
         let output = render_fdn_static(&input, &params);
         assert_eq!(output.len(), 44100 * 2);
         // Should have some energy after the impulse
@@ -226,7 +226,7 @@ mod tests {
     fn test_bypass_silence() {
         let mut input = vec![0.0; 1000];
         input[0] = 1.0;
-        let mut params = ReverbParams::default();
+        let mut params = FdnParams::default();
         params.feedback_gain = 0.0;
         params.wet_dry = 0.0;
         let output = render_fdn_static(&input, &params);
@@ -239,7 +239,7 @@ mod tests {
     fn test_output_is_finite() {
         let mut input = vec![0.0; 44100];
         input[0] = 1.0;
-        let mut params = ReverbParams::default();
+        let mut params = FdnParams::default();
         params.feedback_gain = 1.5; // high feedback
         params.saturation = 0.8;    // saturation should keep it bounded
         let output = render_fdn_static(&input, &params);

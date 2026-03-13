@@ -15,7 +15,7 @@ pub struct Preset {
     pub name: String,
     pub category: String,
     pub description: String,
-    pub params: reverb_dsp::ReverbParams,
+    pub params: reverb_dsp::FdnParams,
 }
 
 /// Find the preset directory. Searches for reverb/gui/presets/ relative to
@@ -82,7 +82,7 @@ pub fn load_presets(dir: &Path) -> Vec<Preset> {
 
         let (category, description) = extract_meta(&json);
 
-        let params = match reverb_dsp::ReverbParams::from_json(&json) {
+        let params = match reverb_dsp::FdnParams::from_json(&json) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -104,7 +104,7 @@ pub fn load_embedded_presets() -> Vec<Preset> {
     let mut presets = Vec::new();
     for (name, json) in EMBEDDED_PRESETS {
         let (category, description) = extract_meta(json);
-        let params = match reverb_dsp::ReverbParams::from_json(json) {
+        let params = match reverb_dsp::FdnParams::from_json(json) {
             Ok(p) => p,
             Err(_) => continue,
         };

@@ -60,13 +60,13 @@ fn as_matrix_type<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     }
 }
 
-/// All FDN reverb parameters.
+/// Internal FDN parameters — the full per-node parameter set consumed by the DSP.
 ///
-/// Uses `#[serde(default)]` so sparse preset JSON loads correctly —
-/// missing keys get default values.
+/// Users should prefer `ReverbParams` (the simplified macro controls) and call
+/// `to_fdn_params()` to get this struct. Uses `#[serde(default)]` for sparse JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ReverbParams {
+pub struct FdnParams {
     // --- Per-node arrays (8 nodes) ---
     #[serde(deserialize_with = "as_i32_vec")]
     pub delay_times: Vec<i32>,
@@ -121,7 +121,7 @@ pub struct ReverbParams {
     pub meta: Option<serde_json::Value>,
 }
 
-impl Default for ReverbParams {
+impl Default for FdnParams {
     fn default() -> Self {
         let delay_ms = [29.7, 37.1, 41.3, 47.9, 53.1, 59.3, 67.7, 73.1];
         let diffusion_ms = [5.3, 7.9, 11.7, 16.1];
@@ -166,7 +166,7 @@ impl Default for ReverbParams {
     }
 }
 
-impl ReverbParams {
+impl FdnParams {
     /// Parse from JSON string. Missing fields get default values.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_default_params() {
-        let p = ReverbParams::default();
+        let p = FdnParams::default();
         assert_eq!(p.delay_times.len(), N);
         assert_eq!(p.damping_coeffs.len(), N);
         assert_eq!(p.feedback_gain, 0.85);
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn test_sparse_json_load() {
         let json = r#"{"feedback_gain": 0.9, "wet_dry": 0.7}"#;
-        let p = ReverbParams::from_json(json).unwrap();
+        let p = FdnParams::from_json(json).unwrap();
         assert_eq!(p.feedback_gain, 0.9);
         assert_eq!(p.wet_dry, 0.7);
         assert_eq!(p.delay_times.len(), N);
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_float_to_int_coercion() {
         let json = r#"{"pre_delay": 441.0, "delay_times": [1310.0, 1637.0, 1821.0, 2112.0, 2342.0, 2615.0, 2986.0, 3223.0]}"#;
-        let p = ReverbParams::from_json(json).unwrap();
+        let p = FdnParams::from_json(json).unwrap();
         assert_eq!(p.pre_delay, 441);
         assert_eq!(p.delay_times[0], 1310);
     }
@@ -245,20 +245,20 @@ mod tests {
     #[test]
     fn test_matrix_type_as_string() {
         let json = r#"{"matrix_type": "hadamard"}"#;
-        let p = ReverbParams::from_json(json).unwrap();
+        let p = FdnParams::from_json(json).unwrap();
         assert_eq!(p.matrix_type, "hadamard");
     }
 
     #[test]
     fn test_matrix_type_as_int() {
         let json = r#"{"matrix_type": 3}"#;
-        let p = ReverbParams::from_json(json).unwrap();
+        let p = FdnParams::from_json(json).unwrap();
         assert_eq!(p.matrix_type, "random_orthogonal");
     }
 
     #[test]
     fn test_has_modulation() {
-        let mut p = ReverbParams::default();
+        let mut p = FdnParams::default();
         assert!(!p.has_modulation());
         p.mod_master_rate = 1.0;
         p.mod_depth_delay[0] = 10.0;
@@ -271,14 +271,14 @@ mod tests {
             "feedback_gain": 0.9,
             "_meta": {"category": "Large", "description": "test"}
         }"#;
-        let p = ReverbParams::from_json(json).unwrap();
+        let p = FdnParams::from_json(json).unwrap();
         assert_eq!(p.feedback_gain, 0.9);
         assert!(p.meta.is_some());
     }
 
     #[test]
     fn test_normalize() {
-        let mut p = ReverbParams::default();
+        let mut p = FdnParams::default();
         p.delay_times = vec![1000, 2000]; // too short
         p.normalize();
         assert_eq!(p.delay_times.len(), N);

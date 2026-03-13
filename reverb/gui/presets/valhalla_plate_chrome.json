@@ -1,58 +1,18 @@
 {
-  "delay_times": [
-    487,
-    613,
-    743,
-    877,
-    1013,
-    1153,
-    1303,
-    1447
-  ],
-  "damping_coeffs": [
-    0.18,
-    0.2,
-    0.18,
-    0.22,
-    0.18,
-    0.2,
-    0.22,
-    0.18
-  ],
-  "feedback_gain": 0.78,
-  "input_gains": [
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125
-  ],
-  "output_gains": [
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0
-  ],
-  "pre_delay": 0,
+  "size": 0.36680959534760765,
+  "decay": 0.78,
+  "brightness": 0.7947368421052632,
   "diffusion": 0.68,
-  "diffusion_stages": 4,
-  "diffusion_delays": [
-    88,
-    132,
-    195,
-    269
-  ],
-  "wet_dry": 0.4,
+  "mix": 0.4,
   "saturation": 0.0,
+  "pre_delay_ms": 0.0,
+  "stereo_width": 1.0,
   "matrix_type": "householder",
-  "matrix_seed": 42,
+  "mod_rate": 0.0,
+  "mod_depth": 0.0,
+  "mod_character": 0.0,
+  "mod_spread": 0.0,
+  "mod_waveform": 0,
   "_meta": {
     "category": "Plate",
     "description": "Valhalla Plate chrome preset \u2014 bright, shimmering plate"

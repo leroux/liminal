@@ -6,7 +6,7 @@
 //! the audio thread.
 
 use crate::matrix;
-use crate::params::{ReverbParams, SR, N};
+use crate::params::{FdnParams, SR, N};
 
 // Maximum buffer sizes based on plugin param ranges.
 // Pre-delay: max 250ms = 11025 samples.
@@ -133,7 +133,7 @@ impl FdnProcessor {
     }
 
     /// Rebuild cached matrices only when type/seed actually changes.
-    fn update_matrix(&mut self, params: &ReverbParams) {
+    fn update_matrix(&mut self, params: &FdnParams) {
         if self.prev_matrix_type != params.matrix_type
             || self.prev_matrix_seed != params.matrix_seed
         {
@@ -145,7 +145,7 @@ impl FdnProcessor {
         }
     }
 
-    fn update_matrix2(&mut self, params: &ReverbParams) {
+    fn update_matrix2(&mut self, params: &FdnParams) {
         if self.prev_mat2_type != params.mod_matrix2_type
             || self.prev_mat2_seed != params.mod_matrix2_seed
         {
@@ -161,7 +161,7 @@ impl FdnProcessor {
     ///
     /// `output` must have length >= `input.len() * 2`.
     /// Applies wet/dry mixing. DSP state persists across calls.
-    pub fn process(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+    pub fn process(&mut self, input: &[f64], params: &FdnParams, output: &mut [f64]) {
         let n_samples = input.len();
         debug_assert!(output.len() >= n_samples * 2);
 
@@ -176,7 +176,7 @@ impl FdnProcessor {
     }
 
     /// Process with wet_dry forced to 1.0 (avoids cloning params).
-    pub fn process_wet(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+    pub fn process_wet(&mut self, input: &[f64], params: &FdnParams, output: &mut [f64]) {
         let n_samples = input.len();
         debug_assert!(output.len() >= n_samples * 2);
 
@@ -190,14 +190,14 @@ impl FdnProcessor {
         }
     }
 
-    fn process_static(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+    fn process_static(&mut self, input: &[f64], params: &FdnParams, output: &mut [f64]) {
         self.process_static_inner(input, params, params.wet_dry, output);
     }
 
     fn process_static_inner(
         &mut self,
         input: &[f64],
-        params: &ReverbParams,
+        params: &FdnParams,
         wet_dry: f64,
         output: &mut [f64],
     ) {
@@ -325,14 +325,14 @@ impl FdnProcessor {
         }
     }
 
-    fn process_modulated(&mut self, input: &[f64], params: &ReverbParams, output: &mut [f64]) {
+    fn process_modulated(&mut self, input: &[f64], params: &FdnParams, output: &mut [f64]) {
         self.process_modulated_inner(input, params, params.wet_dry, output);
     }
 
     fn process_modulated_inner(
         &mut self,
         input: &[f64],
-        params: &ReverbParams,
+        params: &FdnParams,
         wet_dry: f64,
         output: &mut [f64],
     ) {
@@ -579,7 +579,7 @@ impl StereoFdnProcessor {
         &mut self,
         left: &[f64],
         right: &[f64],
-        params: &ReverbParams,
+        params: &FdnParams,
         out_l: &mut [f64],
         out_r: &mut [f64],
     ) {
@@ -624,7 +624,7 @@ mod tests {
     fn test_processor_matches_render_fdn() {
         let mut input = vec![0.0; 4410];
         input[0] = 1.0;
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
 
         // Existing allocating API
         let expected = crate::chain::render_fdn(&input, &params);
@@ -649,7 +649,7 @@ mod tests {
     fn test_processor_modulated_matches() {
         let mut input = vec![0.0; 4410];
         input[0] = 1.0;
-        let mut params = ReverbParams::default();
+        let mut params = FdnParams::default();
         params.mod_master_rate = 2.0;
         params.mod_depth_delay = vec![5.0; N];
         params.mod_depth_damping = vec![0.1; N];
@@ -677,7 +677,7 @@ mod tests {
         let mut right = vec![0.0; 4410];
         left[0] = 1.0;
         right[100] = 1.0;
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
 
         let (exp_l, exp_r) = crate::chain::render_fdn_stereo(&left, &right, &params);
 
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn test_processor_persistent_state() {
         let input = make_sine(1024);
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
         let mut norm_params = params.clone();
         norm_params.normalize();
 
@@ -732,7 +732,7 @@ mod tests {
         // If it allocated, we'd see growing memory, but more importantly
         // this test documents the contract.
         let input = make_sine(256);
-        let params = ReverbParams::default();
+        let params = FdnParams::default();
         let mut norm_params = params.clone();
         norm_params.normalize();
 

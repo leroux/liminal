@@ -120,7 +120,7 @@ fn avg_f64(arr: &[f64]) -> f64 {
 // Reverb: DSP params → nih-plug param map
 // ---------------------------------------------------------------------------
 
-fn reverb_params_to_nih(p: &reverb_dsp::ReverbParams) -> BTreeMap<String, Value> {
+fn reverb_params_to_nih(p: &reverb_dsp::FdnParams) -> BTreeMap<String, Value> {
     let mut m = BTreeMap::new();
 
     // Global
@@ -401,7 +401,7 @@ fn main() {
 
     let plugins: Vec<(&str, &[u8; 16], PathBuf, fn(&str) -> Option<BTreeMap<String, Value>>)> = vec![
         ("Reverb", &REVERB_CID, repo_root.join("reverb/gui/presets"), |json| {
-            reverb_dsp::ReverbParams::from_json(json).ok().map(|p| reverb_params_to_nih(&p))
+            reverb_dsp::FdnParams::from_json(json).ok().map(|p| reverb_params_to_nih(&p))
         }),
         ("Lossy", &LOSSY_CID, repo_root.join("lossy/gui/presets"), |json| {
             lossy_dsp::LossyParams::from_json(json).ok().map(|p| lossy_params_to_nih(&p))

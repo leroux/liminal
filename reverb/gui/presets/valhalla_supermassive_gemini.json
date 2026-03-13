@@ -1,58 +1,18 @@
 {
-  "delay_times": [
-    4409,
-    5507,
-    6131,
-    7109,
-    7877,
-    8791,
-    10039,
-    10847
-  ],
-  "damping_coeffs": [
-    0.25,
-    0.28,
-    0.25,
-    0.3,
-    0.25,
-    0.28,
-    0.3,
-    0.25
-  ],
-  "feedback_gain": 0.94,
-  "input_gains": [
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125
-  ],
-  "output_gains": [
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0
-  ],
-  "pre_delay": 882,
+  "size": 0.7805763936858573,
+  "decay": 0.94,
+  "brightness": 0.7157894736842105,
   "diffusion": 0.6,
-  "diffusion_stages": 4,
-  "diffusion_delays": [
-    313,
-    467,
-    691,
-    953
-  ],
-  "wet_dry": 0.65,
+  "mix": 0.65,
   "saturation": 0.08,
+  "pre_delay_ms": 20.0,
+  "stereo_width": 1.0,
   "matrix_type": "hadamard",
-  "matrix_seed": 42,
+  "mod_rate": 0.0,
+  "mod_depth": 0.0,
+  "mod_character": 0.0,
+  "mod_spread": 0.0,
+  "mod_waveform": 0,
   "_meta": {
     "category": "Sound Design",
     "description": "Supermassive gemini \u2014 dual-character massive verb"

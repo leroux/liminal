@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use reverb_dsp::chain::{render_fdn, render_fdn_stereo};
-use reverb_dsp::params::{ReverbParams, N};
+use reverb_dsp::params::{FdnParams, N};
 use reverb_dsp::processor::{FdnProcessor, StereoFdnProcessor};
 
 fn make_sine(len: usize) -> Vec<f64> {
@@ -9,14 +9,14 @@ fn make_sine(len: usize) -> Vec<f64> {
         .collect()
 }
 
-fn default_params() -> ReverbParams {
-    let mut p = ReverbParams::default();
+fn default_params() -> FdnParams {
+    let mut p = FdnParams::default();
     p.normalize();
     p
 }
 
-fn modulated_params() -> ReverbParams {
-    let mut p = ReverbParams::default();
+fn modulated_params() -> FdnParams {
+    let mut p = FdnParams::default();
     p.mod_master_rate = 2.0;
     p.mod_depth_delay = vec![5.0; N];
     p.mod_depth_damping = vec![0.1; N];
@@ -26,15 +26,15 @@ fn modulated_params() -> ReverbParams {
     p
 }
 
-fn random_ortho_params() -> ReverbParams {
-    let mut p = ReverbParams::default();
+fn random_ortho_params() -> FdnParams {
+    let mut p = FdnParams::default();
     p.matrix_type = "random_orthogonal".to_string();
     p.normalize();
     p
 }
 
-fn heavy_params() -> ReverbParams {
-    let mut p = ReverbParams::default();
+fn heavy_params() -> FdnParams {
+    let mut p = FdnParams::default();
     p.matrix_type = "random_orthogonal".to_string();
     p.saturation = 0.8;
     p.diffusion = 0.7;

@@ -8,7 +8,7 @@
 
 use crate::fdn::build_matrix;
 use crate::matrix;
-use crate::params::{ReverbParams, SR, N};
+use crate::params::{FdnParams, SR, N};
 
 // ---------------------------------------------------------------------------
 // LFO Waveforms
@@ -51,7 +51,7 @@ fn read_delay_frac(buf: &[f64], write_idx: usize, delay_frac: f64, buf_len: usiz
 }
 
 /// Render mono input through the modulated FDN, returning interleaved stereo.
-pub fn render_fdn_mod(input: &[f64], params: &ReverbParams) -> Vec<f64> {
+pub fn render_fdn_mod(input: &[f64], params: &FdnParams) -> Vec<f64> {
     let n_samples = input.len();
 
     // --- Build feedback matrices ---
@@ -359,7 +359,7 @@ mod tests {
     fn test_modulated_impulse() {
         let mut input = vec![0.0; 44100];
         input[0] = 1.0;
-        let mut params = ReverbParams::default();
+        let mut params = FdnParams::default();
         params.mod_master_rate = 2.0;
         params.mod_depth_delay = vec![5.0; N];
         let output = render_fdn_mod(&input, &params);
@@ -375,7 +375,7 @@ mod tests {
     fn test_matrix_blend() {
         let mut input = vec![0.0; 44100];
         input[0] = 1.0;
-        let mut params = ReverbParams::default();
+        let mut params = FdnParams::default();
         params.mod_master_rate = 1.0;
         params.mod_depth_matrix = 0.5;
         params.mod_rate_matrix = 1.0;

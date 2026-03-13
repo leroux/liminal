@@ -3,7 +3,7 @@ use audio_engine::analysis;
 use audio_engine::buffer::AudioBuffer;
 use audio_engine::playback::PlayHandle;
 use audio_engine::safety;
-use reverb_dsp::ReverbParams;
+use reverb_dsp::{FdnParams, ReverbParams};
 use shared_gui::app_shell::AppEvent;
 use std::cell::RefCell;
 use vizia::prelude::*;
@@ -24,14 +24,14 @@ pub enum ReverbAppEvent {
 /// Reverb-specific app data.
 #[derive(Clone, Lens)]
 pub struct ReverbAppData {
-    pub params: ReverbParams,
+    pub params: FdnParams,
     pub source_audio: Option<AudioBuffer>,
 }
 
 impl ReverbAppData {
     pub fn new() -> Self {
         Self {
-            params: ReverbParams::default(),
+            params: FdnParams::default(),
             source_audio: None,
         }
     }
@@ -41,13 +41,22 @@ impl Model for ReverbAppData {
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|e, _| match e {
             ReverbAppEvent::LoadParams(json) => {
-                if let Ok(p) = ReverbParams::from_json(json) {
+                // Try simplified format first (presets use this),
+                // fall back to full FdnParams for backward compat.
+                if json.contains("\"size\"") || json.contains("\"brightness\"") {
+                    if let Ok(s) = ReverbParams::from_json(json) {
+                        self.params = s.to_fdn_params();
+                        self.params.normalize();
+                        return;
+                    }
+                }
+                if let Ok(p) = FdnParams::from_json(json) {
                     self.params = p;
                     self.params.normalize();
                 }
             }
             ReverbAppEvent::Reset => {
-                self.params = ReverbParams::default();
+                self.params = FdnParams::default();
             }
             ReverbAppEvent::Randomize => {
                 randomize_params(&mut self.params);
@@ -188,7 +197,7 @@ fn start_playback(left: &[f64], right: &[f64], sr: u32) -> Result<(), String> {
 
 /// Synchronous render.
 fn render_sync(
-    params: &ReverbParams,
+    params: &FdnParams,
     source: &AudioBuffer,
 ) -> Result<(AudioBuffer, audio_engine::analysis::AudioMetrics, String), String> {
     let mono = source.to_mono();
@@ -217,66 +226,46 @@ fn render_sync(
     Ok((audio, metrics, warning))
 }
 
-fn randomize_params(params: &mut ReverbParams) {
+fn randomize_params(params: &mut FdnParams) {
     use rand::Rng;
     let mut rng = rand::rng();
 
-    params.feedback_gain = rng.random_range(0.3..0.98);
-    params.wet_dry = rng.random_range(0.2..1.0);
-    params.diffusion = rng.random_range(0.0..1.0);
-    params.saturation = rng.random_range(0.0..0.5);
-    params.stereo_width = rng.random_range(0.3..1.0);
-    params.pre_delay = rng.random_range(0..2000);
-
-    for i in 0..8 {
-        params.delay_times[i] = rng.random_range(500..5000);
-        params.damping_coeffs[i] = rng.random_range(0.0..0.8);
-        params.output_gains[i] = rng.random_range(0.3..1.5);
-    }
+    let simplified = ReverbParams {
+        size: rng.random_range(0.1..0.9),
+        decay: rng.random_range(0.3..0.98),
+        brightness: rng.random_range(0.2..1.0),
+        diffusion: rng.random_range(0.0..0.7),
+        mix: rng.random_range(0.2..1.0),
+        saturation: rng.random_range(0.0..0.5),
+        pre_delay_ms: rng.random_range(0.0..50.0),
+        stereo_width: rng.random_range(0.3..1.0),
+        ..ReverbParams::default()
+    };
+    *params = simplified.to_fdn_params();
 }
 
-fn set_param(params: &mut ReverbParams, key: &str, value: &serde_json::Value) {
-    match key {
-        "feedback_gain" => {
-            if let Some(v) = value.as_f64() {
-                params.feedback_gain = v;
-            }
-        }
-        "wet_dry" => {
-            if let Some(v) = value.as_f64() {
-                params.wet_dry = v;
-            }
-        }
-        "diffusion" => {
-            if let Some(v) = value.as_f64() {
-                params.diffusion = v;
-            }
-        }
-        "saturation" => {
-            if let Some(v) = value.as_f64() {
-                params.saturation = v;
-            }
-        }
-        "stereo_width" => {
-            if let Some(v) = value.as_f64() {
-                params.stereo_width = v;
-            }
-        }
-        "pre_delay" => {
-            if let Some(v) = value.as_i64() {
-                params.pre_delay = v as i32;
-            }
-        }
-        "mod_master_rate" => {
-            if let Some(v) = value.as_f64() {
-                params.mod_master_rate = v;
-            }
-        }
-        "mod_correlation" => {
-            if let Some(v) = value.as_f64() {
-                params.mod_correlation = v;
-            }
-        }
-        _ => {}
+fn set_param(params: &mut FdnParams, key: &str, value: &serde_json::Value) {
+    // Convert current full params to simplified, update the field, convert back.
+    // This ensures all derived params (delay_times, damping, node_pans, etc.) stay consistent.
+    let mut s = ReverbParams::from_fdn_params(params);
+    let applied = match key {
+        "size" => value.as_f64().map(|v| s.size = v).is_some(),
+        "decay" => value.as_f64().map(|v| s.decay = v).is_some(),
+        "brightness" => value.as_f64().map(|v| s.brightness = v).is_some(),
+        "diffusion" => value.as_f64().map(|v| s.diffusion = v).is_some(),
+        "mix" => value.as_f64().map(|v| s.mix = v).is_some(),
+        "saturation" => value.as_f64().map(|v| s.saturation = v).is_some(),
+        "pre_delay_ms" => value.as_f64().map(|v| s.pre_delay_ms = v).is_some(),
+        "stereo_width" => value.as_f64().map(|v| s.stereo_width = v).is_some(),
+        "matrix_type" => value.as_str().map(|v| s.matrix_type = v.to_string()).is_some(),
+        "mod_rate" => value.as_f64().map(|v| s.mod_rate = v).is_some(),
+        "mod_depth" => value.as_f64().map(|v| s.mod_depth = v).is_some(),
+        "mod_character" => value.as_f64().map(|v| s.mod_character = v).is_some(),
+        "mod_spread" => value.as_f64().map(|v| s.mod_spread = v).is_some(),
+        "mod_waveform" => value.as_i64().map(|v| s.mod_waveform = v as i32).is_some(),
+        _ => false,
+    };
+    if applied {
+        *params = s.to_fdn_params();
     }
 }

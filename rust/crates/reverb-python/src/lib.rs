@@ -21,7 +21,7 @@ fn render_fdn<'py>(
     input_audio: PyReadonlyArray1<'py, f64>,
     params_json: &str,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let params = reverb_dsp::ReverbParams::from_json(params_json)
+    let params = reverb_dsp::FdnParams::from_json(params_json)
         .map_err(|e| PyValueError::new_err(format!("Invalid params JSON: {e}")))?;
     let input = input_audio.as_slice()?;
     let output = reverb_dsp::render_fdn(input, &params);
@@ -44,7 +44,7 @@ fn render_fdn_stereo<'py>(
     right: PyReadonlyArray1<'py, f64>,
     params_json: &str,
 ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
-    let params = reverb_dsp::ReverbParams::from_json(params_json)
+    let params = reverb_dsp::FdnParams::from_json(params_json)
         .map_err(|e| PyValueError::new_err(format!("Invalid params JSON: {e}")))?;
     let (out_l, out_r) = reverb_dsp::render_fdn_stereo(
         left.as_slice()?,

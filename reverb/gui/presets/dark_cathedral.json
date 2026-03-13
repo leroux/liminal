@@ -1,58 +1,18 @@
 {
-  "delay_times": [
-    3938,
-    4723,
-    5631,
-    6672,
-    7668,
-    8780,
-    9865,
-    11082
-  ],
-  "damping_coeffs": [
-    0.7,
-    0.7,
-    0.7,
-    0.7,
-    0.7,
-    0.7,
-    0.7,
-    0.7
-  ],
-  "feedback_gain": 0.94,
-  "input_gains": [
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125,
-    0.125
-  ],
-  "output_gains": [
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0,
-    1.0
-  ],
-  "pre_delay": 1764,
+  "size": 0.7726941914619022,
+  "decay": 0.94,
+  "brightness": 0.26315789473684215,
   "diffusion": 0.6,
-  "diffusion_stages": 4,
-  "diffusion_delays": [
-    233,
-    348,
-    515,
-    710
-  ],
-  "wet_dry": 0.5,
+  "mix": 0.5,
   "saturation": 0.0,
+  "pre_delay_ms": 40.0,
+  "stereo_width": 1.0,
   "matrix_type": "householder",
-  "matrix_seed": 42,
+  "mod_rate": 0.0,
+  "mod_depth": 0.0,
+  "mod_character": 0.0,
+  "mod_spread": 0.0,
+  "mod_waveform": 0,
   "_meta": {
     "category": "Hall",
     "description": "Dark cathedral \u2014 massive space, heavy damping"

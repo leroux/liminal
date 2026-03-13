@@ -10,7 +10,9 @@ pub mod fdn_mod;
 pub mod matrix;
 pub mod params;
 pub mod processor;
+pub mod simplified;
 
 pub use chain::{render_fdn, render_fdn_stereo};
-pub use params::ReverbParams;
+pub use params::FdnParams;
 pub use processor::{FdnProcessor, StereoFdnProcessor};
+pub use simplified::ReverbParams;
