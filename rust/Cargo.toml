@@ -48,6 +48,7 @@ crossbeam-channel = "0.5"
 nih_plug = { path = "patches/nih-plug" }
 nih_plug_egui = { path = "patches/nih-plug/nih_plug_egui" }
 nih_plug_vizia = { path = "patches/nih-plug/nih_plug_vizia" }
+nih_plug_xtask = { path = "patches/nih-plug/nih_plug_xtask" }
 
 [patch."https://github.com/RustAudio/baseview.git"]
 baseview = { path = "patches/baseview" }

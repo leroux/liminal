@@ -167,7 +167,7 @@ pub struct LossyPluginParams {
 impl Default for LossyPluginParams {
     fn default() -> Self {
         Self {
-            editor_state: ViziaState::new(|| (620, 780)),
+            editor_state: ViziaState::new(|| (900, 700)),
 
             // --- Spectral Loss ---
             mode: EnumParam::new("Mode", SpectralMode::Standard),

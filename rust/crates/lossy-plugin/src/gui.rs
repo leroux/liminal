@@ -135,74 +135,181 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                 }
             });
 
-            VStack::new(cx, |cx| {
-                Label::new(cx, "Lossy")
-                    .font_family(vec![FamilyOwned::Name(String::from(assets::NOTO_SANS))])
-                    .font_weight(FontWeightKeyword::Thin)
-                    .font_size(30.0)
-                    .height(Pixels(42.0))
-                    .child_top(Stretch(1.0))
-                    .child_bottom(Pixels(0.0));
+            HStack::new(cx, |cx| {
+                // ── Left column: title, preset, param sections ──
+                VStack::new(cx, |cx| {
+                    // Title + preset row
+                    HStack::new(cx, |cx| {
+                        Label::new(cx, "Lossy")
+                            .font_family(vec![FamilyOwned::Name(String::from(
+                                assets::NOTO_SANS,
+                            ))])
+                            .font_weight(FontWeightKeyword::Thin)
+                            .font_size(30.0)
+                            .width(Auto);
 
-                HStack::new(cx, |cx| {
-                    Label::new(cx, "Preset:").width(Auto);
-                    Dropdown::new(
-                        cx,
-                        |cx| {
-                            Label::new(
-                                cx,
-                                GuiData::root.map(|d: &GuiData| {
-                                    if d.selected == 0 {
-                                        "(init)".to_string()
-                                    } else if d.selected <= d.presets.len() {
-                                        d.presets[d.selected - 1].name.clone()
-                                    } else {
-                                        String::new()
-                                    }
-                                }),
-                            )
-                        },
-                        |cx| {
-                            ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
-                                Label::new(cx, "(init)")
-                                    .width(Stretch(1.0))
-                                    .cursor(CursorIcon::Hand)
-                                    .on_press(|cx| {
-                                        cx.emit(GuiEvent::SelectPreset(0));
-                                        cx.emit(PopupEvent::Close);
-                                    });
-                                Binding::new(cx, GuiData::presets, |cx, presets_lens| {
-                                    let presets = presets_lens.get(cx);
-                                    for (i, preset) in presets.iter().enumerate() {
-                                        let name = preset.name.clone();
-                                        let idx = i + 1;
-                                        Label::new(cx, &name)
-                                            .width(Stretch(1.0))
-                                            .cursor(CursorIcon::Hand)
-                                            .on_press(move |cx| {
-                                                cx.emit(GuiEvent::SelectPreset(idx));
-                                                cx.emit(PopupEvent::Close);
-                                            });
-                                    }
-                                });
-                            })
-                            .height(Pixels(200.0));
-                        },
-                    )
-                    .width(Stretch(1.0));
+                        Dropdown::new(
+                            cx,
+                            |cx| {
+                                Label::new(
+                                    cx,
+                                    GuiData::root.map(|d: &GuiData| {
+                                        if d.selected == 0 {
+                                            "(init)".to_string()
+                                        } else if d.selected <= d.presets.len() {
+                                            d.presets[d.selected - 1].name.clone()
+                                        } else {
+                                            String::new()
+                                        }
+                                    }),
+                                )
+                            },
+                            |cx| {
+                                ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
+                                    Label::new(cx, "(init)")
+                                        .width(Stretch(1.0))
+                                        .cursor(CursorIcon::Hand)
+                                        .on_press(|cx| {
+                                            cx.emit(GuiEvent::SelectPreset(0));
+                                            cx.emit(PopupEvent::Close);
+                                        });
+                                    Binding::new(
+                                        cx,
+                                        GuiData::presets,
+                                        |cx, presets_lens| {
+                                            let presets = presets_lens.get(cx);
+                                            for (i, preset) in presets.iter().enumerate()
+                                            {
+                                                let name = preset.name.clone();
+                                                let idx = i + 1;
+                                                Label::new(cx, &name)
+                                                    .width(Stretch(1.0))
+                                                    .cursor(CursorIcon::Hand)
+                                                    .on_press(move |cx| {
+                                                        cx.emit(
+                                                            GuiEvent::SelectPreset(idx),
+                                                        );
+                                                        cx.emit(PopupEvent::Close);
+                                                    });
+                                            }
+                                        },
+                                    );
+                                })
+                                .height(Pixels(200.0));
+                            },
+                        )
+                        .width(Stretch(1.0));
+                    })
+                    .col_between(Pixels(8.0))
+                    .height(Auto)
+                    .child_top(Pixels(4.0))
+                    .child_bottom(Pixels(4.0))
+                    .left(Pixels(8.0))
+                    .right(Pixels(8.0));
+
+                    // Scrollable param sections
+                    ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
+                        VStack::new(cx, |cx| {
+                            // ── Spectral Loss ──
+                            section(cx, "Spectral Loss", |cx| {
+                                param_row_enum(cx, "Mode", |p| &p.mode);
+                                param_row(cx, "Loss", |p| &p.loss);
+                                param_row(cx, "Global", |p| &p.global_amount);
+                                param_row(cx, "Phase Loss", |p| &p.phase_loss);
+                                param_row(cx, "Window Size", |p| &p.window_size);
+                                param_row(cx, "Hop Divisor", |p| &p.hop_divisor);
+                                param_row(cx, "Bands", |p| &p.n_bands);
+                                param_row_enum(cx, "Quantizer", |p| &p.quantizer);
+                                param_row(cx, "Pre-Echo", |p| &p.pre_echo);
+                                param_row(cx, "Noise Shape", |p| &p.noise_shape);
+                                param_row(cx, "Weighting", |p| &p.weighting);
+                                param_row(cx, "HF Threshold", |p| &p.hf_threshold);
+                                param_row(cx, "Transient Thr", |p| &p.transient_ratio);
+                                param_row(cx, "Jitter", |p| &p.jitter);
+                                param_row(cx, "Slushy Rate", |p| &p.slushy_rate);
+                            });
+
+                            // ── Crush ──
+                            section(cx, "Crush", |cx| {
+                                param_row(cx, "Crush", |p| &p.crush);
+                                param_row(cx, "Decimate", |p| &p.decimate);
+                            });
+
+                            // ── Packets ──
+                            section(cx, "Packets", |cx| {
+                                param_row_enum(cx, "Packets", |p| &p.packets);
+                                param_row(cx, "Pkt Rate", |p| &p.packet_rate);
+                                param_row(cx, "Pkt Size", |p| &p.packet_size);
+                            });
+
+                            // ── Filter ──
+                            section(cx, "Filter", |cx| {
+                                param_row_enum(cx, "Type", |p| &p.filter_type);
+                                param_row(cx, "Freq", |p| &p.filter_freq);
+                                param_row(cx, "Width", |p| &p.filter_width);
+                                param_row_enum(cx, "Slope", |p| &p.filter_slope);
+                            });
+
+                            // ── Reverb ──
+                            section(cx, "Reverb", |cx| {
+                                param_row(cx, "Verb", |p| &p.verb);
+                                param_row(cx, "Decay", |p| &p.decay);
+                                param_row_enum(cx, "Position", |p| &p.verb_position);
+                            });
+
+                            // ── Freeze ──
+                            section(cx, "Freeze", |cx| {
+                                HStack::new(cx, |cx| {
+                                    Label::new(cx, "Freeze")
+                                        .width(Pixels(100.0))
+                                        .child_top(Stretch(1.0))
+                                        .child_bottom(Stretch(1.0));
+                                    ParamButton::new(cx, GuiData::params, |p| &p.freeze)
+                                        .width(Stretch(1.0));
+                                })
+                                .col_between(Pixels(6.0))
+                                .height(Auto)
+                                .width(Stretch(1.0));
+                                param_row_enum(cx, "Mode", |p| &p.freeze_mode);
+                                param_row(cx, "Freezer", |p| &p.freezer);
+                            });
+
+                            // ── Gate / Output ──
+                            section(cx, "Gate / Output", |cx| {
+                                param_row(cx, "Gate", |p| &p.gate);
+                                param_row(cx, "Wet/Dry", |p| &p.wet_dry);
+                                param_row(cx, "Auto Gain", |p| &p.auto_gain);
+                                param_row(cx, "Loss Gain", |p| &p.loss_gain);
+                            });
+                        })
+                        .row_between(Pixels(16.0))
+                        .height(Auto)
+                        .width(Stretch(1.0))
+                        .child_left(Pixels(8.0))
+                        .child_right(Pixels(8.0))
+                        .child_top(Pixels(4.0))
+                        .child_bottom(Pixels(8.0));
+                    })
+                    .height(Stretch(1.0));
                 })
-                .col_between(Pixels(4.0))
-                .height(Auto);
+                .width(Percentage(60.0))
+                .height(Stretch(1.0));
 
-                ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
-                    GenericUi::new(cx, GuiData::params);
-                })
-                .width(Percentage(100.0));
+                // ── Column separator ──
+                Element::new(cx)
+                    .width(Pixels(1.0))
+                    .height(Stretch(1.0))
+                    .background_color(Color::rgb(80, 80, 80));
 
+                // ── Right column: chat panel ──
                 VStack::new(cx, |cx| {
                     Label::new(cx, "Chat")
-                        .font_size(14.0)
-                        .font_weight(FontWeightKeyword::Bold);
+                        .font_size(16.0)
+                        .font_weight(FontWeightKeyword::Bold)
+                        .height(Auto)
+                        .top(Pixels(8.0))
+                        .bottom(Pixels(4.0))
+                        .left(Pixels(8.0));
 
                     ScrollView::new(cx, 0.0, 0.0, false, true, |cx| {
                         Binding::new(cx, GuiData::chat_messages, |cx, msgs_lens| {
@@ -216,11 +323,14 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                                 };
                                 Label::new(cx, &format!("{prefix}{text}"))
                                     .width(Stretch(1.0))
-                                    .font_size(12.0);
+                                    .font_size(12.0)
+                                    .left(Pixels(8.0))
+                                    .right(Pixels(8.0))
+                                    .bottom(Pixels(2.0));
                             }
                         });
                     })
-                    .height(Pixels(120.0));
+                    .height(Stretch(1.0));
 
                     HStack::new(cx, |cx| {
                         Textbox::new(cx, GuiData::chat_input)
@@ -241,17 +351,79 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                         .width(Pixels(50.0));
                     })
                     .col_between(Pixels(4.0))
-                    .height(Auto);
+                    .height(Auto)
+                    .left(Pixels(8.0))
+                    .right(Pixels(8.0))
+                    .bottom(Pixels(8.0));
                 })
-                .height(Auto);
+                .width(Percentage(40.0))
+                .height(Stretch(1.0));
             })
-            .row_between(Pixels(0.0))
-            .child_left(Stretch(1.0))
-            .child_right(Stretch(1.0));
+            .width(Stretch(1.0))
+            .height(Stretch(1.0));
 
             ResizeHandle::new(cx);
         },
     )
+}
+
+/// Label + ParamSlider row for continuous parameters.
+fn param_row<P, FMap>(cx: &mut Context, label: &str, params_to_param: FMap)
+where
+    P: Param + 'static,
+    FMap: Fn(&Arc<LossyPluginParams>) -> &P + Copy + 'static,
+{
+    HStack::new(cx, |cx| {
+        Label::new(cx, label)
+            .width(Pixels(100.0))
+            .child_top(Stretch(1.0))
+            .child_bottom(Stretch(1.0));
+        ParamSlider::new(cx, GuiData::params, params_to_param).width(Stretch(1.0));
+    })
+    .col_between(Pixels(6.0))
+    .height(Auto)
+    .width(Stretch(1.0));
+}
+
+/// Label + ParamSlider row for enum/stepped parameters.
+fn param_row_enum<P, FMap>(cx: &mut Context, label: &str, params_to_param: FMap)
+where
+    P: Param + 'static,
+    FMap: Fn(&Arc<LossyPluginParams>) -> &P + Copy + 'static,
+{
+    HStack::new(cx, |cx| {
+        Label::new(cx, label)
+            .width(Pixels(100.0))
+            .child_top(Stretch(1.0))
+            .child_bottom(Stretch(1.0));
+        ParamSlider::new(cx, GuiData::params, params_to_param)
+            .set_style(ParamSliderStyle::CurrentStepLabeled { even: true })
+            .width(Stretch(1.0));
+    })
+    .col_between(Pixels(6.0))
+    .height(Auto)
+    .width(Stretch(1.0));
+}
+
+fn section(cx: &mut Context, title: &str, content: impl FnOnce(&mut Context)) {
+    VStack::new(cx, |cx| {
+        Label::new(cx, title)
+            .font_size(13.0)
+            .font_weight(FontWeightKeyword::Bold)
+            .width(Stretch(1.0))
+            .height(Auto)
+            .top(Pixels(2.0))
+            .bottom(Pixels(4.0));
+        Element::new(cx)
+            .height(Pixels(1.0))
+            .width(Stretch(1.0))
+            .background_color(Color::rgb(80, 80, 80))
+            .bottom(Pixels(4.0));
+        content(cx);
+    })
+    .row_between(Pixels(2.0))
+    .height(Auto)
+    .width(Stretch(1.0));
 }
 
 fn set_param_f32(cx: &mut EventContext, param: &FloatParam, value: f32) {
