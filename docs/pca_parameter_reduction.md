@@ -259,7 +259,7 @@ Most experiments will show high envelope correlation (>0.90) — the macro-reach
 - Single-node comb filter effects
 - These are niche sounds. If needed, they can be accessed by writing `FdnParams` directly, bypassing the macro layer.
 
-**Implementation:** See `scripts/explore_unmapped_space.py` — generates WAV pairs (`*_full.wav` vs `*_macro.wav`) for each experiment.
+**Implementation:** See `scripts/reverb/explore_unmapped_space.py` — generates WAV pairs (`*_full.wav` vs `*_macro.wav`) for each experiment.
 
 ## Applying to Other Plugins
 
@@ -326,6 +326,7 @@ The Rust `simplified.rs` modules are per-plugin — no shared crate needed since
 
 ## Reference
 
-- Reverb PCA script: `scripts/reverb_pca.py` (throwaway analysis)
-- Reverb validation script: `scripts/reverb_macro_validate.py` (throwaway analysis)
+- Reverb PCA script: `scripts/reverb/reverb_pca.py` (throwaway analysis)
+- Reverb validation script: `scripts/reverb/reverb_macro_validate.py` (throwaway analysis)
+- Unmapped space exploration: `scripts/reverb/explore_unmapped_space.py` (throwaway analysis)
 - Reverb simplified params: `rust/crates/reverb-dsp/src/simplified.rs`
