@@ -7,6 +7,27 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub const SR: f64 = 44100.0;
 
+// --- Fixed constants (removed from user-facing params after PCA analysis) ---
+// These 8 params are at their defaults in 89+ of 98 hand-designed presets.
+// Fixing them reduces the param count from 41 to 33 with negligible perceptual impact.
+
+/// RNG seed for spectral and packet processing.
+pub const SEED: i32 = 42;
+/// Pre-echo artifact amount (always off).
+pub const PRE_ECHO: f64 = 0.0;
+/// Transient detection threshold for pre-echo (unused since pre_echo=0).
+pub const TRANSIENT_RATIO: f64 = 4.0;
+/// Envelope-following noise shaping (always off).
+pub const NOISE_SHAPE: f64 = 0.0;
+/// Freeze slushy drift rate.
+pub const SLUSHY_RATE: f64 = 0.03;
+/// Freeze mode: 0=Slushy (drift enabled), 1=Solid.
+pub const FREEZE_MODE: i32 = 0;
+/// Reverb position: 0=Pre (before spectral), 1=Post (after filter).
+pub const VERB_POSITION: i32 = 0;
+/// Master intensity multiplier (always 1.0 = full).
+pub const GLOBAL_AMOUNT: f64 = 1.0;
+
 /// Accept both `4096` and `4096.0` from JSON, truncate to i32.
 fn as_i32<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
     let v: serde_json::Value = Deserialize::deserialize(d)?;
@@ -52,14 +73,9 @@ pub fn param_range(key: &str) -> Option<(f64, f64)> {
         "window_size" => Some((64.0, 16384.0)),
         "hop_divisor" => Some((1.0, 8.0)),
         "n_bands" => Some((2.0, 64.0)),
-        "global_amount" => Some((0.0, 1.0)),
         "phase_loss" => Some((0.0, 1.0)),
-        "pre_echo" => Some((0.0, 1.0)),
-        "noise_shape" => Some((0.0, 1.0)),
         "weighting" => Some((0.0, 1.0)),
         "hf_threshold" => Some((0.0, 1.0)),
-        "transient_ratio" => Some((1.5, 20.0)),
-        "slushy_rate" => Some((0.001, 0.5)),
         "crush" => Some((0.0, 1.0)),
         "decimate" => Some((0.0, 1.0)),
         "packet_rate" => Some((0.0, 1.0)),
@@ -85,8 +101,13 @@ pub fn param_range(key: &str) -> Option<(f64, f64)> {
 ///
 /// Uses `#[serde(default)]` so sparse preset JSON loads correctly —
 /// missing keys get default values.
+/// All lossy parameters (33 user-facing + metadata).
+///
+/// 8 former params are now fixed constants (see `SEED`, `PRE_ECHO`, etc.).
+/// Uses `#[serde(default)]` so sparse preset JSON loads correctly —
+/// missing keys get defaults, and legacy keys (pre_echo, etc.) are ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct LossyParams {
     // --- Spectral loss ---
     #[serde(deserialize_with = "as_i32")]
@@ -99,16 +120,11 @@ pub struct LossyParams {
     pub hop_divisor: i32,
     #[serde(deserialize_with = "as_i32")]
     pub n_bands: i32,
-    pub global_amount: f64,
     pub phase_loss: f64,
     #[serde(deserialize_with = "as_i32")]
     pub quantizer: i32,
-    pub pre_echo: f64,
-    pub noise_shape: f64,
     pub weighting: f64,
     pub hf_threshold: f64,
-    pub transient_ratio: f64,
-    pub slushy_rate: f64,
 
     // --- Crush ---
     pub crush: f64,
@@ -131,14 +147,10 @@ pub struct LossyParams {
     // --- Reverb ---
     pub verb: f64,
     pub decay: f64,
-    #[serde(deserialize_with = "as_i32")]
-    pub verb_position: i32,
 
     // --- Freeze ---
     #[serde(deserialize_with = "as_i32")]
     pub freeze: i32,
-    #[serde(deserialize_with = "as_i32")]
-    pub freeze_mode: i32,
     pub freezer: f64,
 
     // --- Gate ---
@@ -161,10 +173,6 @@ pub struct LossyParams {
     // --- Output ---
     pub wet_dry: f64,
 
-    // --- Internal ---
-    #[serde(deserialize_with = "as_i32")]
-    pub seed: i32,
-
     // --- Metadata (ignored for DSP, present in presets) ---
     #[serde(rename = "_meta", default, skip_serializing)]
     pub meta: Option<serde_json::Value>,
@@ -180,15 +188,10 @@ impl Default for LossyParams {
             window_size: 2048,
             hop_divisor: 4,
             n_bands: 21,
-            global_amount: 1.0,
             phase_loss: 0.0,
             quantizer: 0,
-            pre_echo: 0.0,
-            noise_shape: 0.0,
             weighting: 1.0,
             hf_threshold: 0.3,
-            transient_ratio: 4.0,
-            slushy_rate: 0.03,
             // Crush
             crush: 0.0,
             decimate: 0.0,
@@ -204,10 +207,8 @@ impl Default for LossyParams {
             // Reverb
             verb: 0.0,
             decay: 0.5,
-            verb_position: 0,
             // Freeze
             freeze: 0,
-            freeze_mode: 0,
             freezer: 1.0,
             // Gate
             gate: 0.0,
@@ -223,8 +224,6 @@ impl Default for LossyParams {
             bounce_lfo_max: 5.0,
             // Output
             wet_dry: 1.0,
-            // Internal
-            seed: 42,
             // Metadata
             meta: None,
         }
@@ -306,7 +305,6 @@ mod tests {
         assert_eq!(p.loss, 0.5);
         assert_eq!(p.window_size, 2048);
         assert_eq!(p.wet_dry, 1.0);
-        assert_eq!(p.seed, 42);
     }
 
     #[test]
@@ -318,6 +316,26 @@ mod tests {
         // Missing fields should get defaults
         assert_eq!(p.window_size, 2048);
         assert_eq!(p.wet_dry, 1.0);
+    }
+
+    #[test]
+    fn test_legacy_preset_with_removed_fields() {
+        // Old presets with the 8 removed fields should still deserialize
+        let json = r#"{
+            "loss": 0.4,
+            "pre_echo": 0.3,
+            "noise_shape": 0.5,
+            "transient_ratio": 8.0,
+            "slushy_rate": 0.1,
+            "freeze_mode": 1,
+            "verb_position": 1,
+            "global_amount": 0.8,
+            "seed": 123
+        }"#;
+        let p = LossyParams::from_json(json).unwrap();
+        assert_eq!(p.loss, 0.4);
+        // Removed fields are silently ignored
+        assert_eq!(p.window_size, 2048); // default
     }
 
     #[test]

@@ -6,7 +6,7 @@ Provides load_wav, save_wav, and make_impulse used by GUIs and CLI renderers.
 from math import gcd
 
 import numpy as np
-from scipy.io import wavfile
+import soundfile as sf
 
 
 def load_wav(path, sr=44100):
@@ -15,13 +15,7 @@ def load_wav(path, sr=44100):
     Returns (audio_array, sample_rate).
     Audio is float64, mono or stereo (samples, 2).
     """
-    file_sr, data = wavfile.read(path)
-    if data.dtype == np.int16:
-        audio = data.astype(np.float64) / 32768.0
-    elif data.dtype == np.int32:
-        audio = data.astype(np.float64) / 2147483648.0
-    else:
-        audio = data.astype(np.float64)
+    audio, file_sr = sf.read(path, dtype='float64')
     if file_sr != sr:
         from scipy.signal import resample_poly
         g = gcd(sr, file_sr)
@@ -36,8 +30,7 @@ def save_wav(path, audio, sr=44100):
         audio = audio / peak * 0.95
     elif 0 < peak < 0.1:
         audio = audio / peak * 0.9
-    out = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-    wavfile.write(path, sr, out)
+    sf.write(path, np.clip(audio, -1.0, 1.0), sr, subtype='PCM_16')
 
 
 def make_impulse(sr=44100, seconds=0.5):

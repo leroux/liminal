@@ -1,7 +1,6 @@
 {
   "loss": 0.45,
   "window_size": 1024,
-  "global_amount": 1.0,
   "packets": 1,
   "packet_rate": 0.2,
   "packet_size": 25.0,
@@ -11,7 +10,6 @@
   "filter_slope": 2,
   "verb": 0.0,
   "freeze": 0,
-  "freeze_mode": 0,
   "gate": 0.03,
   "wet_dry": 1.0,
   "_meta": {

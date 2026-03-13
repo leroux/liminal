@@ -12,7 +12,6 @@
   "bounce_lfo_max": 2.0,
   "verb": 0.2,
   "decay": 0.4,
-  "verb_position": 1,
   "wet_dry": 1.0,
   "_meta": {
     "category": "Radio Scan",

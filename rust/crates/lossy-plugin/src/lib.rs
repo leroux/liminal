@@ -4,10 +4,13 @@
 //! Uses pre-allocated `StereoLossyProcessor` for zero audio-thread allocations.
 //! DSP state (reverb comb filters, biquad state) persists across process calls.
 
+mod capture;
+mod chat_logic;
 mod gui;
 mod params;
 pub mod presets;
 
+use capture::AudioCapture;
 use nih_plug::prelude::*;
 use lossy_dsp::StereoLossyProcessor;
 use std::sync::Arc;
@@ -25,6 +28,8 @@ pub struct LossyPlugin {
     /// Pre-allocated f64 output buffers.
     output_l: Vec<f64>,
     output_r: Vec<f64>,
+    /// Ring buffer capturing output audio for GUI analysis / LLM context.
+    audio_capture: AudioCapture,
 }
 
 /// Maximum buffer size we'll see from a host (pre-allocate for this).
@@ -40,6 +45,7 @@ impl Default for LossyPlugin {
             input_r: vec![0.0; MAX_BUFFER_SIZE],
             output_l: vec![0.0; MAX_BUFFER_SIZE],
             output_r: vec![0.0; MAX_BUFFER_SIZE],
+            audio_capture: AudioCapture::new(44100.0, 3.0),
         }
     }
 }
@@ -90,6 +96,9 @@ impl Plugin for LossyPlugin {
             self.output_r.resize(max_buf, 0.0);
         }
 
+        // Re-create capture buffer with actual sample rate
+        self.audio_capture = AudioCapture::new(config.sample_rate, 3.0);
+
         // No added latency — state persists across process calls
         true
     }
@@ -99,7 +108,7 @@ impl Plugin for LossyPlugin {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        gui::create(self.params.clone())
+        gui::create(self.params.clone(), self.audio_capture.clone())
     }
 
     fn process(
@@ -145,6 +154,13 @@ impl Plugin for LossyPlugin {
                 channel_slices[1][i] = self.output_r[i] as f32;
             }
         }
+
+        // Capture output audio for GUI analysis / LLM context
+        self.audio_capture.write_audio(
+            &self.output_l[..num_samples],
+            &self.output_r[..num_samples],
+            num_samples,
+        );
 
         ProcessStatus::Normal
     }

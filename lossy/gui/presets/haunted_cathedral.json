@@ -3,7 +3,6 @@
   "window_size": 4096,
   "verb": 0.8,
   "decay": 0.9,
-  "verb_position": 0,
   "phase_loss": 0.15,
   "auto_gain": 0.6,
   "wet_dry": 1.0,

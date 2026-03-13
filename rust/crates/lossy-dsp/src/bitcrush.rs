@@ -9,9 +9,8 @@ use crate::params::LossyParams;
 
 /// Apply bitcrusher and/or sample rate reducer.
 pub fn crush_and_decimate(audio: &[f64], params: &LossyParams) -> Vec<f64> {
-    let g = params.global_amount;
-    let crush = params.crush * g;
-    let decimate = params.decimate * g;
+    let crush = params.crush;
+    let decimate = params.decimate;
 
     if crush <= 0.0 && decimate <= 0.0 {
         return audio.to_vec();

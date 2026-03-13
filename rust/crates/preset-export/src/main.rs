@@ -354,11 +354,53 @@ fn fractal_params_to_nih(p: &fractal_dsp::FractalParams) -> BTreeMap<String, Val
 }
 
 // ---------------------------------------------------------------------------
+// snake_case → Title Case display name
+// ---------------------------------------------------------------------------
+
+fn snake_to_display_name(snake: &str) -> String {
+    /// Known abbreviations that should be fully uppercased.
+    const ABBREVIATIONS: &[&str] = &["am", "ams", "emt", "fm", "hf", "lfo", "mp3", "rmx16"];
+
+    snake
+        .split('_')
+        .map(|token| {
+            let lower = token.to_ascii_lowercase();
+
+            // Known abbreviation → all caps
+            if ABBREVIATIONS.contains(&lower.as_str()) {
+                return token.to_ascii_uppercase();
+            }
+
+            // Short mixed alphanumeric (e.g. "480l") → all caps
+            if token.len() <= 4
+                && token.chars().any(|c| c.is_ascii_digit())
+                && token.chars().any(|c| c.is_ascii_alphabetic())
+            {
+                return token.to_ascii_uppercase();
+            }
+
+            // Default: capitalize first letter
+            let mut chars = token.chars();
+            match chars.next() {
+                Some(c) => {
+                    let mut s = c.to_uppercase().to_string();
+                    s.push_str(chars.as_str());
+                    s
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// ---------------------------------------------------------------------------
 // Preset loading (reuses the DSP crates' from_json)
 // ---------------------------------------------------------------------------
 
 struct PresetInfo {
     name: String,
+    display_name: Option<String>,
     json: String,
 }
 
@@ -382,7 +424,13 @@ fn load_preset_jsons(dir: &Path) -> Vec<PresetInfo> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        presets.push(PresetInfo { name, json });
+
+        // Extract optional _meta.name for display override
+        let display_name = serde_json::from_str::<Value>(&json)
+            .ok()
+            .and_then(|v| v.get("_meta")?.get("name")?.as_str().map(String::from));
+
+        presets.push(PresetInfo { name, display_name, json });
     }
     presets.sort_by(|a, b| a.name.cmp(&b.name));
     presets
@@ -437,7 +485,12 @@ fn main() {
             let state_json = make_plugin_state(params);
             let vstpreset = write_vstpreset(cid, &state_json);
 
-            let out_path = out_dir.join(format!("{}.vstpreset", preset.name));
+            let display = preset
+                .display_name
+                .as_deref()
+                .map(String::from)
+                .unwrap_or_else(|| snake_to_display_name(&preset.name));
+            let out_path = out_dir.join(format!("{}.vstpreset", display));
             std::fs::write(&out_path, &vstpreset).expect("write vstpreset");
             count += 1;
         }

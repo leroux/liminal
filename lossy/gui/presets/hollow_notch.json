@@ -7,7 +7,6 @@
   "filter_slope": 2,
   "verb": 0.4,
   "decay": 0.7,
-  "verb_position": 1,
   "wet_dry": 1.0,
   "_meta": {
     "category": "Notch",

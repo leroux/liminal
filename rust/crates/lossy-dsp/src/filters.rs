@@ -98,8 +98,7 @@ pub fn apply_filter(audio: &[f64], params: &LossyParams) -> Vec<f64> {
 
 /// Blend in a lo-fi Schroeder reverb.
 pub fn lofi_reverb(audio: &[f64], params: &LossyParams) -> Vec<f64> {
-    let g = params.global_amount;
-    let mix = params.verb * g;
+    let mix = params.verb;
     if mix <= 0.0 {
         return audio.to_vec();
     }
@@ -153,8 +152,7 @@ fn comb_reverb(audio: &[f64], mix: f64, fb: f64) -> Vec<f64> {
 
 /// Simple RMS-based noise gate.
 pub fn noise_gate(audio: &[f64], params: &LossyParams) -> Vec<f64> {
-    let g = params.global_amount;
-    let threshold = params.gate * g;
+    let threshold = params.gate;
     if threshold <= 0.0 {
         return audio.to_vec();
     }

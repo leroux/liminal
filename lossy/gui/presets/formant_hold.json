@@ -2,7 +2,6 @@
   "loss": 0.35,
   "window_size": 4096,
   "freeze": 1,
-  "freeze_mode": 0,
   "freezer": 0.7,
   "filter_type": 1,
   "filter_freq": 1200.0,

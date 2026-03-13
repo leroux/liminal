@@ -5,7 +5,7 @@
 //! Uses a Gilbert-Elliott two-state Markov model for bursty dropout patterns.
 //! Short Hann crossfades at packet boundaries prevent clicks.
 
-use crate::params::{LossyParams, SR};
+use crate::params::{LossyParams, SR, SEED};
 use crate::rng::NumpyRng;
 
 /// Crossfade length at packet boundaries (~3 ms at 44.1 kHz).
@@ -18,17 +18,15 @@ pub fn packet_process(audio: &[f64], params: &LossyParams) -> Vec<f64> {
         return audio.to_vec();
     }
 
-    let g = params.global_amount;
-    let rate = params.packet_rate * g;
+    let rate = params.packet_rate;
     let packet_ms = params.packet_size;
-    let seed = params.seed;
 
     if rate <= 0.0 {
         return audio.to_vec();
     }
 
     let packet_samples = (packet_ms * SR / 1000.0).max(1.0) as usize;
-    let mut rng = NumpyRng::new((seed + 1000) as u32);
+    let mut rng = NumpyRng::new((SEED + 1000) as u32);
 
     let mut output = audio.to_vec();
     let n = output.len();

@@ -54,22 +54,6 @@ pub enum FilterSlope {
     Slope96,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
-pub enum VerbPosition {
-    #[name = "Pre"]
-    Pre,
-    #[name = "Post"]
-    Post,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
-pub enum FreezeMode {
-    #[name = "Slushy"]
-    Slushy,
-    #[name = "Solid"]
-    Solid,
-}
-
 #[derive(Params)]
 pub struct LossyPluginParams {
     #[persist = "editor-state"]
@@ -88,24 +72,14 @@ pub struct LossyPluginParams {
     pub hop_divisor: IntParam,
     #[id = "n_bands"]
     pub n_bands: IntParam,
-    #[id = "global_amount"]
-    pub global_amount: FloatParam,
     #[id = "phase_loss"]
     pub phase_loss: FloatParam,
     #[id = "quantizer"]
     pub quantizer: EnumParam<QuantizerType>,
-    #[id = "pre_echo"]
-    pub pre_echo: FloatParam,
-    #[id = "noise_shape"]
-    pub noise_shape: FloatParam,
     #[id = "weighting"]
     pub weighting: FloatParam,
     #[id = "hf_threshold"]
     pub hf_threshold: FloatParam,
-    #[id = "transient_ratio"]
-    pub transient_ratio: FloatParam,
-    #[id = "slushy_rate"]
-    pub slushy_rate: FloatParam,
 
     // --- Crush ---
     #[id = "crush"]
@@ -136,14 +110,10 @@ pub struct LossyPluginParams {
     pub verb: FloatParam,
     #[id = "decay"]
     pub decay: FloatParam,
-    #[id = "verb_position"]
-    pub verb_position: EnumParam<VerbPosition>,
 
     // --- Freeze ---
     #[id = "freeze"]
     pub freeze: BoolParam,
-    #[id = "freeze_mode"]
-    pub freeze_mode: EnumParam<FreezeMode>,
     #[id = "freezer"]
     pub freezer: FloatParam,
 
@@ -176,15 +146,10 @@ impl Default for LossyPluginParams {
             window_size: IntParam::new("Window Size", 2048, IntRange::Linear { min: 64, max: 16384 }),
             hop_divisor: IntParam::new("Hop Divisor", 4, IntRange::Linear { min: 1, max: 8 }),
             n_bands: IntParam::new("Bands", 21, IntRange::Linear { min: 2, max: 64 }),
-            global_amount: FloatParam::new("Global", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             phase_loss: FloatParam::new("Phase Loss", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             quantizer: EnumParam::new("Quantizer", QuantizerType::Uniform),
-            pre_echo: FloatParam::new("Pre-Echo", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
-            noise_shape: FloatParam::new("Noise Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             weighting: FloatParam::new("Weighting", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             hf_threshold: FloatParam::new("HF Threshold", 0.3, FloatRange::Linear { min: 0.0, max: 1.0 }),
-            transient_ratio: FloatParam::new("Transient Thr", 4.0, FloatRange::Linear { min: 1.5, max: 20.0 }),
-            slushy_rate: FloatParam::new("Slushy Rate", 0.03, FloatRange::Linear { min: 0.001, max: 0.5 }),
 
             // --- Crush ---
             crush: FloatParam::new("Crush", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
@@ -214,11 +179,9 @@ impl Default for LossyPluginParams {
             // --- Reverb ---
             verb: FloatParam::new("Verb", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             decay: FloatParam::new("Decay", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 }),
-            verb_position: EnumParam::new("Verb Pos", VerbPosition::Pre),
 
             // --- Freeze ---
             freeze: BoolParam::new("Freeze", false),
-            freeze_mode: EnumParam::new("Freeze Mode", FreezeMode::Slushy),
             freezer: FloatParam::new("Freezer", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
 
             // --- Gate ---
@@ -245,15 +208,10 @@ impl LossyPluginParams {
             window_size: self.window_size.value(),
             hop_divisor: self.hop_divisor.value(),
             n_bands: self.n_bands.value(),
-            global_amount: self.global_amount.value() as f64,
             phase_loss: self.phase_loss.value() as f64,
             quantizer: self.quantizer.value() as i32,
-            pre_echo: self.pre_echo.value() as f64,
-            noise_shape: self.noise_shape.value() as f64,
             weighting: self.weighting.value() as f64,
             hf_threshold: self.hf_threshold.value() as f64,
-            transient_ratio: self.transient_ratio.value() as f64,
-            slushy_rate: self.slushy_rate.value() as f64,
             crush: self.crush.value() as f64,
             decimate: self.decimate.value() as f64,
             packets: self.packets.value() as i32,
@@ -269,9 +227,7 @@ impl LossyPluginParams {
             },
             verb: self.verb.value() as f64,
             decay: self.decay.value() as f64,
-            verb_position: self.verb_position.value() as i32,
             freeze: if self.freeze.value() { 1 } else { 0 },
-            freeze_mode: self.freeze_mode.value() as i32,
             freezer: self.freezer.value() as f64,
             gate: self.gate.value() as f64,
             threshold: self.threshold.value() as f64,
@@ -283,7 +239,6 @@ impl LossyPluginParams {
             bounce_lfo_min: 0.1,
             bounce_lfo_max: 5.0,
             wet_dry: self.wet_dry.value() as f64,
-            seed: 42,
             meta: None,
         }
     }

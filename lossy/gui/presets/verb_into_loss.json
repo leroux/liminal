@@ -3,7 +3,6 @@
   "window_size": 4096,
   "verb": 0.7,
   "decay": 0.8,
-  "verb_position": 0,
   "weighting": 0.7,
   "wet_dry": 1.0,
   "_meta": {

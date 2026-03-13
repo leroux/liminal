@@ -14,6 +14,8 @@ members = [
     "crates/explore-dsp",
     "crates/explore-cli",
     "crates/claudewire",
+    "crates/claudesdk",
+    "crates/pedal-chat",
     "crates/sound-designer",
     "crates/preset-export",
     "crates/audio-engine",
@@ -24,7 +26,17 @@ members = [
     "xtask",
 ]
 
+[workspace.package]
+edition = "2024"
+
+[workspace.lints.clippy]
+all = "warn"
+
 [workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "process", "macros", "sync", "time"] }
+anyhow = "1"
+tracing = "0.1"
+nix = { version = "0.29", features = ["signal"] }
 realfft = "3.5"
 num-complex = "0.4"
 rand = "0.9"

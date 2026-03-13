@@ -2,8 +2,8 @@
 //!
 //! Serde structs for every message type in the Claude CLI stream-json protocol.
 //! Validation happens at deserialize time — no separate validation step.
-//! Uses `deny_unknown_fields` for strict types and allows extras via
-//! `flatten` + `HashMap` for permissive types.
+//! Types that may gain new upstream fields use `#[serde(flatten)] extra: HashMap`
+//! to capture unknown keys without breaking deserialization.
 
 use std::collections::HashMap;
 
@@ -24,7 +24,7 @@ pub enum ContentBlock {
     Thinking(ThinkingBlock),
     #[serde(rename = "server_tool_use")]
     ServerToolUse(ServerToolUseBlock),
-    /// Unknown content block types (web_search_20250305, mcp_tools, etc.).
+    /// Unknown content block types (`web_search_20250305`, `mcp_tools`, etc.).
     #[serde(other)]
     Unknown,
 }
@@ -73,7 +73,7 @@ pub enum Delta {
     Thinking(ThinkingDelta),
     #[serde(rename = "signature_delta")]
     Signature(SignatureDelta),
-    /// Unknown delta types (citations_delta, etc.).
+    /// Unknown delta types (`citations_delta`, etc.).
     #[serde(other)]
     Unknown,
 }

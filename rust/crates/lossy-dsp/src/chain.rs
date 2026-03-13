@@ -13,15 +13,13 @@
 use crate::bitcrush::crush_and_decimate;
 use crate::filters::{apply_filter, limiter, lofi_reverb, noise_gate};
 use crate::packets::packet_process;
-use crate::params::{param_range, LossyParams, BOUNCE_TARGETS, SR};
+use crate::params::{param_range, LossyParams, BOUNCE_TARGETS, SR, VERB_POSITION};
 use crate::spectral::spectral_process;
 
 /// Core signal chain without bounce modulation.
 fn render_chain(dry: &[f64], params: &LossyParams) -> Vec<f64> {
-    let verb_pos = params.verb_position;
-
     // PRE verb: reverb runs on dry signal before spectral processing
-    let mut wet = if verb_pos == 0 {
+    let mut wet = if VERB_POSITION == 0 {
         lofi_reverb(dry, params)
     } else {
         dry.to_vec()
@@ -68,7 +66,7 @@ fn render_chain(dry: &[f64], params: &LossyParams) -> Vec<f64> {
     wet = apply_filter(&wet, params);
 
     // POST verb: reverb runs after filter
-    if verb_pos == 1 {
+    if VERB_POSITION == 1 {
         wet = lofi_reverb(&wet, params);
     }
 

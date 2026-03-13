@@ -3,7 +3,6 @@
   "window_size": 96,
   "hop_divisor": 2,
   "n_bands": 4,
-  "noise_shape": 0.8,
   "weighting": 0.0,
   "crush": 0.15,
   "auto_gain": 0.5,

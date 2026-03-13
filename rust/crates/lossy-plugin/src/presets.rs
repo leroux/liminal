@@ -150,15 +150,10 @@ pub fn apply_preset(preset: &Preset, plugin_params: &LossyPluginParams, setter: 
     set_int(setter, &plugin_params.window_size, p.window_size);
     set_int(setter, &plugin_params.hop_divisor, p.hop_divisor);
     set_int(setter, &plugin_params.n_bands, p.n_bands);
-    set_float(setter, &plugin_params.global_amount, p.global_amount);
     set_float(setter, &plugin_params.phase_loss, p.phase_loss);
     set_enum(setter, &plugin_params.quantizer, p.quantizer);
-    set_float(setter, &plugin_params.pre_echo, p.pre_echo);
-    set_float(setter, &plugin_params.noise_shape, p.noise_shape);
     set_float(setter, &plugin_params.weighting, p.weighting);
     set_float(setter, &plugin_params.hf_threshold, p.hf_threshold);
-    set_float(setter, &plugin_params.transient_ratio, p.transient_ratio);
-    set_float(setter, &plugin_params.slushy_rate, p.slushy_rate);
     set_float(setter, &plugin_params.crush, p.crush);
     set_float(setter, &plugin_params.decimate, p.decimate);
     set_enum(setter, &plugin_params.packets, p.packets);
@@ -170,9 +165,7 @@ pub fn apply_preset(preset: &Preset, plugin_params: &LossyPluginParams, setter: 
     set_filter_slope(setter, &plugin_params.filter_slope, p.filter_slope);
     set_float(setter, &plugin_params.verb, p.verb);
     set_float(setter, &plugin_params.decay, p.decay);
-    set_enum(setter, &plugin_params.verb_position, p.verb_position);
     set_bool(setter, &plugin_params.freeze, p.freeze != 0);
-    set_enum(setter, &plugin_params.freeze_mode, p.freeze_mode);
     set_float(setter, &plugin_params.freezer, p.freezer);
     set_float(setter, &plugin_params.gate, p.gate);
     set_float(setter, &plugin_params.threshold, p.threshold);

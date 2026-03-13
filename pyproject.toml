@@ -9,8 +9,10 @@ dependencies = [
     "httpx>=0.27,<1.0",
     "matplotlib>=3.7",
     "numpy>=1.24,<2.4",
+    "salib>=1.5.2",
     "scipy>=1.17.0",
     "sounddevice>=0.5.5",
+    "torch>=2.10.0",
 ]
 
 [build-system]

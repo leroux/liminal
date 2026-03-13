@@ -1,8 +1,6 @@
 {
   "loss": 0.65,
   "window_size": 4096,
-  "pre_echo": 0.9,
-  "transient_ratio": 2.5,
   "hf_threshold": 0.2,
   "auto_gain": 0.4,
   "wet_dry": 1.0,

@@ -67,8 +67,6 @@ fn realtime_spectral_heavy() {
     params.loss = 0.9;
     params.jitter = 0.5;
     params.phase_loss = 0.5;
-    params.noise_shape = 0.5;
-    params.pre_echo = 0.3;
     let rtf = measure_rtf(N_SAMPLES, || render_lossy(&input, &params));
     assert!(
         rtf < MAX_RTF,

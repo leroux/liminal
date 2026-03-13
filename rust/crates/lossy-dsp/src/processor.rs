@@ -11,7 +11,7 @@
 //! Zero heap allocations after construction. Lofi reverb, freeze, and biquad
 //! states persist across calls.
 
-use crate::params::{LossyParams, SR, SLOPE_OPTIONS};
+use crate::params::{LossyParams, SR, SLOPE_OPTIONS, SEED, PRE_ECHO, NOISE_SHAPE, SLUSHY_RATE, FREEZE_MODE, VERB_POSITION};
 use crate::rng::NumpyRng;
 use num_complex::Complex;
 use realfft::RealFftPlanner;
@@ -231,10 +231,8 @@ impl LossyProcessor {
     }
 
     fn render_chain(&mut self, dry: &[f64], params: &LossyParams, n: usize) {
-        let verb_pos = params.verb_position;
-
         // PRE verb
-        if verb_pos == 0 {
+        if VERB_POSITION == 0 {
             self.lofi_reverb(dry, params, n);
         } else {
             self.wet[..n].copy_from_slice(&dry[..n]);
@@ -281,7 +279,7 @@ impl LossyProcessor {
         self.apply_filter(n, params);
 
         // POST verb
-        if verb_pos == 1 {
+        if VERB_POSITION == 1 {
             self.verb_scratch[..n].copy_from_slice(&self.wet[..n]);
             self.lofi_reverb_from_scratch(params, n);
         }
@@ -297,8 +295,7 @@ impl LossyProcessor {
     // Lofi reverb (persistent state)
     // -----------------------------------------------------------------------
     fn lofi_reverb(&mut self, input: &[f64], params: &LossyParams, n: usize) {
-        let g = params.global_amount;
-        let mix = params.verb * g;
+        let mix = params.verb;
         if mix <= 0.0 {
             self.wet[..n].copy_from_slice(&input[..n]);
             return;
@@ -333,8 +330,7 @@ impl LossyProcessor {
     }
 
     fn lofi_reverb_from_scratch(&mut self, params: &LossyParams, n: usize) {
-        let g = params.global_amount;
-        let mix = params.verb * g;
+        let mix = params.verb;
         if mix <= 0.0 {
             return;
         }
@@ -371,11 +367,10 @@ impl LossyProcessor {
     // Streaming STFT spectral processing
     // -----------------------------------------------------------------------
     fn spectral_process(&mut self, n: usize, params: &LossyParams) {
-        let g = params.global_amount;
-        let loss = params.loss * g;
+        let loss = params.loss;
         let freeze = params.freeze != 0;
-        let phase_loss = params.phase_loss * g;
-        let jitter = params.jitter * g;
+        let phase_loss = params.phase_loss;
+        let jitter = params.jitter;
 
         // Fast bypass: no spectral effect active
         if loss <= 0.0 && !freeze && phase_loss <= 0.0 && jitter <= 0.0 {
@@ -396,7 +391,7 @@ impl LossyProcessor {
             self.stft_cached_ws = params.window_size;
             self.stft_cached_hd = params.hop_divisor;
             self.stft_startup_remaining = window_size;
-            self.stft_rng = NumpyRng::new(params.seed as u32);
+            self.stft_rng = NumpyRng::new(SEED as u32);
         }
 
         // Update cached window and FFT plans
@@ -478,20 +473,15 @@ impl LossyProcessor {
         n_bins: usize,
         params: &LossyParams,
     ) {
-        let g = params.global_amount;
-        let loss = params.loss * g;
+        let loss = params.loss;
         let inverse = params.inverse != 0;
-        let jitter = params.jitter * g;
+        let jitter = params.jitter;
         let freeze = params.freeze != 0;
-        let freeze_mode = params.freeze_mode;
         let freezer_blend = params.freezer;
-        let phase_loss = params.phase_loss * g;
+        let phase_loss = params.phase_loss;
         let quantizer_type = params.quantizer;
-        let pre_echo_amount = params.pre_echo * g;
-        let noise_shape = params.noise_shape;
         let weighting = params.weighting;
         let hf_threshold = params.hf_threshold;
-        let slushy_rate_param = params.slushy_rate;
 
         let fft = self.cached_fft.as_ref().unwrap().clone();
         let ifft = self.cached_ifft.as_ref().unwrap().clone();
@@ -511,19 +501,18 @@ impl LossyProcessor {
             self.phases[i] = self.spectrum[i].arg();
         }
 
-        // Pre-echo: 1-frame delayed detection
+        // Pre-echo: 1-frame delayed detection (only if PRE_ECHO > 0, currently fixed at 0.0)
         let mut frame_loss = loss;
-        if pre_echo_amount > 0.0 {
+        if PRE_ECHO > 0.0 {
             let mut energy = 0.0_f64;
             for j in 0..window_size {
                 let s = self.stft_in_buf[j] * self.window[j];
                 energy += s * s;
             }
-            // If this frame is a transient relative to the previous, boost loss
             if self.stft_prev_energy > 1e-12
-                && energy / self.stft_prev_energy > params.transient_ratio
+                && energy / self.stft_prev_energy > crate::params::TRANSIENT_RATIO
             {
-                frame_loss = (loss + pre_echo_amount * 0.5).min(1.0);
+                frame_loss = (loss + PRE_ECHO * 0.5).min(1.0);
             }
             self.stft_prev_energy = energy;
         }
@@ -542,7 +531,7 @@ impl LossyProcessor {
                 &band_edges_copy,
                 n_bands,
                 quantizer_type,
-                noise_shape,
+                NOISE_SHAPE,
                 weighting,
             );
         } else {
@@ -591,11 +580,11 @@ impl LossyProcessor {
                 self.frozen_mag[..n_bins].copy_from_slice(&self.proc_mag[..n_bins]);
                 self.frozen_valid = true;
             }
-            if freeze_mode != 1 {
+            if FREEZE_MODE != 1 {
                 // Slushy: drift frozen spectrum toward live signal
                 for i in 0..n_bins {
-                    self.frozen_mag[i] = (1.0 - slushy_rate_param) * self.frozen_mag[i]
-                        + slushy_rate_param * self.proc_mag[i];
+                    self.frozen_mag[i] = (1.0 - SLUSHY_RATE) * self.frozen_mag[i]
+                        + SLUSHY_RATE * self.proc_mag[i];
                 }
             }
             for i in 0..n_bins {
@@ -799,9 +788,8 @@ impl LossyProcessor {
     // Crush + decimate (in-place on self.wet)
     // -----------------------------------------------------------------------
     fn crush_and_decimate(&mut self, n: usize, params: &LossyParams) {
-        let g = params.global_amount;
-        let crush = params.crush * g;
-        let decimate = params.decimate * g;
+        let crush = params.crush;
+        let decimate = params.decimate;
 
         if crush <= 0.0 && decimate <= 0.0 {
             return;
@@ -839,17 +827,15 @@ impl LossyProcessor {
             return;
         }
 
-        let g = params.global_amount;
-        let rate = params.packet_rate * g;
+        let rate = params.packet_rate;
         let packet_ms = params.packet_size;
-        let seed = params.seed;
 
         if rate <= 0.0 {
             return;
         }
 
         let packet_samples = ((packet_ms * SR / 1000.0).max(1.0) as usize).min(MAX_PACKET_SAMPLES);
-        let mut rng = NumpyRng::new((seed + 1000) as u32);
+        let mut rng = NumpyRng::new((SEED + 1000) as u32);
 
         let p_g2b = rate * 0.3;
         let p_b2g = 0.4;
@@ -980,8 +966,7 @@ impl LossyProcessor {
     // Noise gate (in-place on self.wet)
     // -----------------------------------------------------------------------
     fn noise_gate(&mut self, n: usize, params: &LossyParams) {
-        let g = params.global_amount;
-        let threshold = params.gate * g;
+        let threshold = params.gate;
         if threshold <= 0.0 {
             return;
         }

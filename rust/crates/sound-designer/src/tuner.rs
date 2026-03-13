@@ -81,6 +81,14 @@ impl SoundDesigner {
         }
     }
 
+    /// Create with a pre-built backend (for testing).
+    pub fn with_backend(guide_text: String, schema: ParamSchema, backend: ChatBackend) -> Self {
+        Self {
+            backend: Some(backend),
+            ..Self::new(guide_text, schema)
+        }
+    }
+
     /// Whether the tuner is currently processing a request.
     pub fn is_busy(&self) -> bool {
         self.state != State::Idle

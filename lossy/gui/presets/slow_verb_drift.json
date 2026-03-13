@@ -3,7 +3,6 @@
   "window_size": 4096,
   "verb": 0.6,
   "decay": 0.7,
-  "verb_position": 0,
   "bounce": 1,
   "bounce_target": 4,
   "bounce_rate": 0.1,

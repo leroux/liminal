@@ -1,7 +1,6 @@
 {
   "loss": 0.4,
   "window_size": 2048,
-  "noise_shape": 0.9,
   "quantizer": 1,
   "weighting": 0.5,
   "auto_gain": 0.3,

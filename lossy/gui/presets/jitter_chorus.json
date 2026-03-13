@@ -4,7 +4,6 @@
   "window_size": 2048,
   "verb": 0.25,
   "decay": 0.6,
-  "verb_position": 1,
   "wet_dry": 1.0,
   "_meta": {
     "category": "Jitter",

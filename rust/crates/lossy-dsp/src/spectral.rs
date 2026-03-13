@@ -12,29 +12,22 @@
 //!   Phase Loss -- deterministic quantization of phase angles
 //!   Jitter     -- random phase perturbation
 
-use crate::params::{LossyParams, SR};
+use crate::params::{LossyParams, SR, SEED, PRE_ECHO, TRANSIENT_RATIO, NOISE_SHAPE, SLUSHY_RATE, FREEZE_MODE};
 use crate::rng::NumpyRng;
 use num_complex::Complex;
 use realfft::RealFftPlanner;
 
 /// Run STFT spectral degradation on input audio.
 pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
-    let g = params.global_amount;
-    let loss = params.loss * g;
+    let loss = params.loss;
     let inverse = params.inverse != 0;
-    let jitter = params.jitter * g;
-    let seed = params.seed;
+    let jitter = params.jitter;
     let freeze = params.freeze != 0;
-    let freeze_mode = params.freeze_mode;
     let freezer_blend = params.freezer;
-    let phase_loss = params.phase_loss * g;
+    let phase_loss = params.phase_loss;
     let quantizer_type = params.quantizer;
-    let pre_echo_amount = params.pre_echo * g;
-    let noise_shape = params.noise_shape;
     let weighting = params.weighting;
     let hf_threshold = params.hf_threshold;
-    let transient_ratio = params.transient_ratio;
-    let slushy_rate_param = params.slushy_rate;
 
     if loss <= 0.0 && !freeze && phase_loss <= 0.0 && jitter <= 0.0 {
         return input_audio.to_vec();
@@ -63,7 +56,7 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         0
     };
 
-    let mut rng = NumpyRng::new(seed as u32);
+    let mut rng = NumpyRng::new(SEED as u32);
 
     // Bark-like log-spaced band edges
     let (band_edges, n_bands) = compute_band_edges(n_bins, n_bands_param);
@@ -71,8 +64,8 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
     // ATH weighting per band
     let ath_weights = compute_ath_weights(&band_edges, n_bands, n_bins, window_size);
 
-    // Pre-echo detection pass
-    let transient_flags = if pre_echo_amount > 0.0 && n_frames > 1 {
+    // Pre-echo detection pass (only if PRE_ECHO > 0, currently fixed at 0.0)
+    let transient_flags = if PRE_ECHO > 0.0 && n_frames > 1 {
         let mut energies = vec![0.0_f64; n_frames];
         for fi in 0..n_frames {
             let start = fi * hop_size;
@@ -85,7 +78,7 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         }
         let mut flags = vec![false; n_frames];
         for fi in 1..n_frames {
-            if energies[fi - 1] > 1e-12 && energies[fi] / energies[fi - 1] > transient_ratio {
+            if energies[fi - 1] > 1e-12 && energies[fi] / energies[fi - 1] > TRANSIENT_RATIO {
                 flags[fi] = true;
             }
         }
@@ -136,7 +129,7 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
         let mut frame_loss = loss;
         if let Some(ref flags) = transient_flags {
             if fi < n_frames - 1 && flags[fi + 1] {
-                frame_loss = (loss + pre_echo_amount * 0.5).min(1.0);
+                frame_loss = (loss + PRE_ECHO * 0.5).min(1.0);
             }
         }
 
@@ -156,7 +149,7 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
                 n_bands,
                 &ath_weights,
                 quantizer_type,
-                noise_shape,
+                NOISE_SHAPE,
                 weighting,
             );
         } else {
@@ -205,11 +198,11 @@ pub fn spectral_process(input_audio: &[f64], params: &LossyParams) -> Vec<f64> {
                 frozen_spectrum = Some(proc_mag[..n_bins].to_vec());
             }
             let frozen = frozen_spectrum.as_mut().unwrap();
-            if freeze_mode != 1 {
+            if FREEZE_MODE != 1 {
                 // Slushy: drift frozen spectrum toward live signal
                 for i in 0..n_bins.min(frozen.len()) {
-                    frozen[i] = (1.0 - slushy_rate_param) * frozen[i]
-                        + slushy_rate_param * proc_mag[i];
+                    frozen[i] = (1.0 - SLUSHY_RATE) * frozen[i]
+                        + SLUSHY_RATE * proc_mag[i];
                 }
             }
             // Blend

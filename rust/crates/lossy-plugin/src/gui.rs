@@ -1,13 +1,33 @@
 //! Vizia GUI for the Lossy plugin.
 
+use crate::capture::AudioCapture;
+use crate::chat_logic;
 use crate::params::LossyPluginParams;
 use crate::presets::{self, Preset};
-use claudewire::chat::{ChatBackend, ChatMsg};
+use pedal_chat::{ChatBackend, ChatMsg};
 use nih_plug::prelude::*;
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::widgets::*;
 use nih_plug_vizia::{assets, create_vizia_editor, ViziaTheming};
 use std::sync::Arc;
+
+/// Simple file logger for debugging chat in plugin context.
+macro_rules! chat_log {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/lossy-chat.log")
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(f, "[{now}] {}", format_args!($($arg)*));
+        }
+    }};
+}
 
 #[derive(Clone, Lens)]
 struct GuiData {
@@ -17,6 +37,8 @@ struct GuiData {
     chat_input: String,
     chat_messages: Vec<(String, String)>,
     chat_busy: bool,
+    /// Raw accumulated assistant text for JSON extraction on Done.
+    pending_response: String,
 }
 
 impl nih_plug_vizia::vizia::binding::Data for Preset {
@@ -37,45 +59,124 @@ impl Model for GuiData {
                 }
             }
             GuiEvent::SetChatInput(text) => {
+                chat_log!("SetChatInput: {:?}", text);
                 self.chat_input = text.clone();
             }
             GuiEvent::SendChat => {
                 if self.chat_input.trim().is_empty() || self.chat_busy {
+                    chat_log!("SendChat: skipped (empty={}, busy={})", self.chat_input.trim().is_empty(), self.chat_busy);
                     return;
                 }
-                let text = self.chat_input.clone();
-                self.chat_messages.push(("user".into(), text.clone()));
+                let user_text = self.chat_input.clone();
+                chat_log!("SendChat: user_text={:?}", user_text);
+                self.chat_messages.push(("user".into(), user_text.clone()));
                 self.chat_input.clear();
                 self.chat_busy = true;
+                self.pending_response.clear();
+
+                // Build enriched prompt with current params + audio metrics
+                let dsp_params = self.params.to_dsp_params();
+                let metrics = AUDIO_CAPTURE.with(|cell| {
+                    cell.borrow()
+                        .as_ref()
+                        .and_then(|c| c.compute_metrics())
+                });
+                chat_log!("SendChat: has_metrics={}", metrics.is_some());
+                let full_prompt = chat_logic::build_enriched_prompt(
+                    &user_text,
+                    &dsp_params,
+                    metrics.as_ref(),
+                );
+                chat_log!("SendChat: prompt_len={}", full_prompt.len());
+
+                // Show context sent to AI
+                let mut context_summary = String::new();
+                if let Some(m) = &metrics {
+                    context_summary = format!(
+                        "[context: RMS {:.0}dB, peak {:.0}dB, centroid {:.0}Hz]",
+                        m.rms_db, m.peak_db, m.spectral_centroid_hz,
+                    );
+                } else {
+                    context_summary = "[context: params sent, no audio]".into();
+                }
+                self.chat_messages.push(("context".into(), context_summary));
+
                 CHAT_BACKEND.with(|cell| {
                     let mut backend = cell.borrow_mut();
                     if backend.is_none() {
+                        chat_log!("SendChat: creating new ChatBackend");
                         *backend = Some(ChatBackend::new(SYSTEM_PROMPT));
                     }
                     if let Some(b) = backend.as_ref() {
-                        b.send(&text);
+                        chat_log!("SendChat: sending to backend");
+                        b.send(&full_prompt);
                     }
                 });
             }
             GuiEvent::PollChat => {
                 CHAT_BACKEND.with(|cell| {
                     if let Some(b) = cell.borrow().as_ref() {
-                        for msg in b.poll() {
+                        let msgs = b.poll();
+                        if !msgs.is_empty() {
+                            chat_log!("PollChat: got {} messages", msgs.len());
+                        }
+                        for msg in msgs {
                             match msg {
-                                ChatMsg::AssistantText(text) => {
+                                ChatMsg::Text(text) => {
+                                    chat_log!("PollChat: Text len={}", text.len());
+                                    // Track raw response for JSON extraction
+                                    self.pending_response = text.clone();
+                                    // Update display (strip JSON block for readability)
+                                    let display = chat_logic::strip_json_block(&text);
                                     if let Some(last) = self.chat_messages.last_mut() {
                                         if last.0 == "assistant" {
-                                            last.1 = text;
+                                            last.1 = display;
                                             return;
                                         }
                                     }
-                                    self.chat_messages.push(("assistant".into(), text));
+                                    self.chat_messages
+                                        .push(("assistant".into(), display));
                                 }
                                 ChatMsg::Error(e) => {
+                                    chat_log!("PollChat: Error: {}", e);
                                     self.chat_messages.push(("error".into(), e));
                                     self.chat_busy = false;
                                 }
                                 ChatMsg::Done => {
+                                    chat_log!("PollChat: Done. pending_response len={}", self.pending_response.len());
+                                    chat_log!("PollChat: pending_response: {:?}", &self.pending_response[..self.pending_response.len().min(500)]);
+                                    // Extract and apply params from JSON block
+                                    let extracted = chat_logic::extract_json_block(&self.pending_response);
+                                    chat_log!("PollChat: extracted json={}", extracted.is_some());
+                                    if let Some(extracted) = extracted {
+                                        chat_log!("PollChat: extracted keys: {:?}", extracted.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                                        let current = self.params.to_dsp_params();
+                                        match chat_logic::merge_params(&current, &extracted) {
+                                            Ok(new_params) => {
+                                                chat_log!("PollChat: merge OK, applying params");
+                                                apply_preset_vizia(
+                                                    cx, &self.params, &new_params,
+                                                );
+                                                // Show the applied JSON
+                                                let keys: Vec<String> = extracted
+                                                    .as_object()
+                                                    .map(|o| o.iter().map(|(k, v)| format!("{k}={v}")).collect())
+                                                    .unwrap_or_default();
+                                                self.chat_messages.push((
+                                                    "applied".into(),
+                                                    format!("[applied: {}]", keys.join(", ")),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                chat_log!("PollChat: merge FAILED: {}", e);
+                                                self.chat_messages.push((
+                                                    "error".into(),
+                                                    format!("Param error: {e}"),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    self.pending_response.clear();
                                     self.chat_busy = false;
                                 }
                             }
@@ -97,18 +198,65 @@ enum GuiEvent {
 
 thread_local! {
     static CHAT_BACKEND: std::cell::RefCell<Option<ChatBackend>> = const { std::cell::RefCell::new(None) };
+    static AUDIO_CAPTURE: std::cell::RefCell<Option<AudioCapture>> = const { std::cell::RefCell::new(None) };
 }
 
-const SYSTEM_PROMPT: &str = "You are an audio effects tuning assistant for a lossy codec emulation plugin. \
-    Help the user achieve their desired lo-fi or codec artifact sound. Give concise advice about parameter adjustments. \
-    Keep responses short and focused on audio production.";
+const SYSTEM_PROMPT: &str = "\
+You are an expert audio engineer tuning a codec artifact emulator (lossy audio effect).
 
-pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
+SIGNAL CHAIN: Input -> Spectral Loss (STFT) -> Crush/Decimate -> Packets -> Filter -> Verb -> Gate -> Limiter -> Wet/Dry Mix -> Output
+
+PARAMETERS AND RANGES:
+
+Spectral Loss:
+- inverse: 0=Standard (hear processed), 1=Inverse (hear residual)
+- jitter (0.0-1.0): Random phase perturbation. 0=off, 1=max.
+- loss (0.0-1.0): Destruction amount. 0=clean, 1.0=destroyed.
+- window_size (64-16384): FFT window size. Large=smooth/dark, small=glitchy.
+- hop_divisor (1-8): Overlap ratio. 4=75% overlap (default).
+- n_bands (2-64): Bark-like bands for psychoacoustic gating.
+- phase_loss (0.0-1.0): Phase quantization. 0=off, higher=more phasey.
+- quantizer: 0=uniform, 1=compand (MP3-style).
+- weighting (0.0-1.0): 0=equal freq weighting, 1=psychoacoustic ATH.
+- hf_threshold (0.0-1.0): HF rolloff threshold. Default 0.3.
+
+Crush: crush (0.0-1.0) bitcrusher, decimate (0.0-1.0) sample rate reduction.
+Packets: packets 0=Clean/1=Loss/2=Repeat, packet_rate (0.0-1.0), packet_size (5-200ms).
+Filter: filter_type 0=Bypass/1=Bandpass/2=Notch, filter_freq (20-20000Hz), filter_width (0-1), filter_slope 6=6dB/24=24dB/96=96dB per octave.
+Effects: verb (0-1) lo-fi reverb, decay (0-1), freeze 0/1, freezer (0-1), gate (0-1).
+Output: wet_dry (0-1), auto_gain (0-1), loss_gain (0-1).
+
+RECIPES:
+- Underwater/streaming: loss 0.7-0.9, window_size 4096, no crush
+- Glitchy digital: loss 0.5, window_size 256-512, packet loss, crush 0.3
+- Lo-fi radio: loss 0.4, bandpass 800-2000Hz, verb 0.2, decimate 0.3
+- Frozen texture: freeze on, slushy mode, loss 0.5, verb 0.3
+- Extreme destruction: loss 1.0, crush 0.6, decimate 0.5, packet repeat
+
+RULES:
+- You can chat normally without changing params. Only include a ```json block when ready to apply changes.
+- The ```json block must be a flat JSON object with parameter key-value pairs.
+- Only include params you want to change — missing keys keep current values.
+- Stay within documented ranges. Use integer values for integer params.
+- Keep text explanations concise. Focus on what you changed and why.
+";
+
+pub fn create(
+    params: Arc<LossyPluginParams>,
+    audio_capture: AudioCapture,
+) -> Option<Box<dyn Editor>> {
     create_vizia_editor(
         params.editor_state.clone(),
         ViziaTheming::Custom,
         move |cx, _| {
             assets::register_noto_sans_light(cx);
+
+            chat_log!("GUI create: editor opened");
+
+            // Store audio capture in thread_local for access in event handlers
+            AUDIO_CAPTURE.with(|cell| {
+                *cell.borrow_mut() = Some(audio_capture.clone());
+            });
 
             let mut all_presets = Vec::new();
             if let Some(dir) = presets::find_preset_dir() {
@@ -125,6 +273,7 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                 chat_input: String::new(),
                 chat_messages: Vec::new(),
                 chat_busy: false,
+                pending_response: String::new(),
             }
             .build(cx);
 
@@ -214,19 +363,14 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                             section(cx, "Spectral Loss", |cx| {
                                 param_row_enum(cx, "Mode", |p| &p.mode);
                                 param_row(cx, "Loss", |p| &p.loss);
-                                param_row(cx, "Global", |p| &p.global_amount);
                                 param_row(cx, "Phase Loss", |p| &p.phase_loss);
                                 param_row(cx, "Window Size", |p| &p.window_size);
                                 param_row(cx, "Hop Divisor", |p| &p.hop_divisor);
                                 param_row(cx, "Bands", |p| &p.n_bands);
                                 param_row_enum(cx, "Quantizer", |p| &p.quantizer);
-                                param_row(cx, "Pre-Echo", |p| &p.pre_echo);
-                                param_row(cx, "Noise Shape", |p| &p.noise_shape);
                                 param_row(cx, "Weighting", |p| &p.weighting);
                                 param_row(cx, "HF Threshold", |p| &p.hf_threshold);
-                                param_row(cx, "Transient Thr", |p| &p.transient_ratio);
                                 param_row(cx, "Jitter", |p| &p.jitter);
-                                param_row(cx, "Slushy Rate", |p| &p.slushy_rate);
                             });
 
                             // ── Crush ──
@@ -254,7 +398,6 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                             section(cx, "Reverb", |cx| {
                                 param_row(cx, "Verb", |p| &p.verb);
                                 param_row(cx, "Decay", |p| &p.decay);
-                                param_row_enum(cx, "Position", |p| &p.verb_position);
                             });
 
                             // ── Freeze ──
@@ -270,7 +413,6 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                                 .col_between(Pixels(6.0))
                                 .height(Auto)
                                 .width(Stretch(1.0));
-                                param_row_enum(cx, "Mode", |p| &p.freeze_mode);
                                 param_row(cx, "Freezer", |p| &p.freezer);
                             });
 
@@ -319,6 +461,8 @@ pub fn create(params: Arc<LossyPluginParams>) -> Option<Box<dyn Editor>> {
                                     "user" => "You: ",
                                     "assistant" => "Claude: ",
                                     "error" => "Error: ",
+                                    "context" => "",
+                                    "applied" => "",
                                     _ => "",
                                 };
                                 Label::new(cx, &format!("{prefix}{text}"))
@@ -472,15 +616,10 @@ fn apply_preset_vizia(
     set_param_i32(cx, &pp.window_size, p.window_size);
     set_param_i32(cx, &pp.hop_divisor, p.hop_divisor);
     set_param_i32(cx, &pp.n_bands, p.n_bands);
-    set_param_f32(cx, &pp.global_amount, p.global_amount as f32);
     set_param_f32(cx, &pp.phase_loss, p.phase_loss as f32);
     set_param_enum(cx, &pp.quantizer, p.quantizer);
-    set_param_f32(cx, &pp.pre_echo, p.pre_echo as f32);
-    set_param_f32(cx, &pp.noise_shape, p.noise_shape as f32);
     set_param_f32(cx, &pp.weighting, p.weighting as f32);
     set_param_f32(cx, &pp.hf_threshold, p.hf_threshold as f32);
-    set_param_f32(cx, &pp.transient_ratio, p.transient_ratio as f32);
-    set_param_f32(cx, &pp.slushy_rate, p.slushy_rate as f32);
     set_param_f32(cx, &pp.crush, p.crush as f32);
     set_param_f32(cx, &pp.decimate, p.decimate as f32);
     set_param_enum(cx, &pp.packets, p.packets);
@@ -503,9 +642,7 @@ fn apply_preset_vizia(
 
     set_param_f32(cx, &pp.verb, p.verb as f32);
     set_param_f32(cx, &pp.decay, p.decay as f32);
-    set_param_enum(cx, &pp.verb_position, p.verb_position);
     set_param_bool(cx, &pp.freeze, p.freeze != 0);
-    set_param_enum(cx, &pp.freeze_mode, p.freeze_mode);
     set_param_f32(cx, &pp.freezer, p.freezer as f32);
     set_param_f32(cx, &pp.gate, p.gate as f32);
     set_param_f32(cx, &pp.threshold, p.threshold as f32);

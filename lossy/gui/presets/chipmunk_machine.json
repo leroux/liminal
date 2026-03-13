@@ -3,7 +3,6 @@
   "window_size": 256,
   "crush": 0.2,
   "decimate": 0.6,
-  "noise_shape": 0.5,
   "threshold": 0.15,
   "auto_gain": 0.9,
   "weighting": 0.0,
