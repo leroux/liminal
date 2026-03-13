@@ -4,7 +4,7 @@ Three mature audio effect plugins — **Reverb**, **Lossy**, **Fractal** — shi
 
 Key decisions:
 - **License**: MIT
-- **AI chat**: Included in plugins via `claudewire` crate
+- **AI chat**: `claudewire` (Claude CLI protocol) + `sound-designer` (AI tuner)
 - **GUI**: Vizia (unified for plugins + standalone apps)
 - **Python**: Deleted entirely after port
 - **Chordspace**: Moved to own branch, removed from main
@@ -20,20 +20,20 @@ Key decisions:
 - [ ] Delete duplicate/unnecessary files (research docs, planning files in subdirs)
 - [ ] Commit or discard pending `shared/audio.py` change
 
-## Phase 1: claudewire — Reusable AI Sound Design Library
+## Phase 1: sound-designer — Reusable AI Sound Design Library
 
-Port `shared/llm_tuner.py` into `rust/crates/claudewire/` as a standalone, reusable Rust crate:
+New `rust/crates/sound-designer/` crate, built on top of `claudewire` (Claude CLI protocol):
 
-- [ ] Claude Agent SDK integration via subprocess (`claude` CLI) — already started in `direct.rs`
-- [ ] Async transport layer (already in `transport.rs`)
-- [ ] Audio metrics formatting for LLM context (port `shared/audio_features.py`)
-- [ ] Parameter validation & clamping (port `shared/params.py` ParamSchema)
-- [ ] Streaming text responses with callback interface
-- [ ] Autonomous iteration loop (up to N silent renders)
-- [ ] Session management (reset, undo)
+- [x] Audio metrics formatting for LLM context (`metrics.rs` — port of `shared/audio_features.py`)
+- [x] Parameter schema, validation & clamping (`params.rs` — port of `shared/params.py`)
+- [x] AI tuner with streaming text, JSON param extraction, and merge (`tuner.rs` — port of `shared/llm_tuner.py`)
+- [x] Autonomous iteration loop (up to N silent renders with `_iterate` protocol)
+- [x] Session management (reset, undo)
+- [x] System prompt construction with guide text + rules
 - [ ] Spectrogram/waveform image generation for multimodal context
+- [ ] Integration tests with mock Claude responses
 
-**Goal**: `claudewire` is a self-contained crate any Rust audio app can depend on for AI-assisted parameter tuning.
+**Goal**: `sound-designer` is a self-contained crate any Rust audio app can depend on for AI-assisted parameter tuning. `claudewire` remains the low-level Claude CLI transport.
 
 ## Phase 2: Complete Vizia Plugin GUIs
 

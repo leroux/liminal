@@ -1,0 +1,12 @@
+[package]
+name = "sound-designer"
+version = "0.1.0"
+edition = "2021"
+description = "AI-assisted sound design library — parameter tuning via Claude"
+
+[dependencies]
+claudewire = { path = "../claudewire" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

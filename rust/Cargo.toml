@@ -14,6 +14,7 @@ members = [
     "crates/explore-dsp",
     "crates/explore-cli",
     "crates/claudewire",
+    "crates/sound-designer",
     "crates/preset-export",
     "crates/audio-engine",
     "crates/shared-gui",
