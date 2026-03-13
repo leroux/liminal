@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
+use num_complex::Complex;
 use serde_json::Value;
 
 use crate::{AudioOutput, EffectEntry, pf, pi, ps, params};

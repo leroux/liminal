@@ -15,11 +15,11 @@ members = [
     "crates/explore-cli",
     "crates/claudewire",
     "crates/preset-export",
-    # "crates/audio-engine",
-    # "crates/shared-gui",
-    # "crates/reverb-app",
-    # "crates/lossy-app",
-    # "crates/fractal-app",
+    "crates/audio-engine",
+    "crates/shared-gui",
+    "crates/reverb-app",
+    "crates/lossy-app",
+    "crates/fractal-app",
     "xtask",
 ]
 
