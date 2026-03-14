@@ -1,0 +1,36 @@
+[package]
+name = "pedal-apps"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "reverb-app"
+path = "src/bin/reverb-app.rs"
+
+[[bin]]
+name = "lossy-app"
+path = "src/bin/lossy-app.rs"
+
+[[bin]]
+name = "fractal-app"
+path = "src/bin/fractal-app.rs"
+
+[dependencies]
+reverb-dsp = { path = "../reverb-dsp" }
+lossy-dsp = { path = "../lossy-dsp" }
+fractal-dsp = { path = "../fractal-dsp" }
+dsp-core = { path = "../dsp-core" }
+vizia = { git = "https://github.com/vizia/vizia.git", branch = "main", default-features = false, features = ["winit", "clipboard"] }
+serde.workspace = true
+serde_json.workspace = true
+crossbeam-channel.workspace = true
+realfft.workspace = true
+num-complex.workspace = true
+hound.workspace = true
+cpal.workspace = true
+rubato.workspace = true
+rand.workspace = true
+rfd.workspace = true
+
+[lints]
+workspace = true

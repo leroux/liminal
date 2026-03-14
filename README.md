@@ -43,8 +43,6 @@ Restart your DAW after installing.
 Requires [Rust](https://rustup.rs/) (stable toolchain).
 
 ```bash
-cd rust
-
 # Build all three plugins (VST3 + CLAP bundles)
 make all-plugins
 
@@ -62,7 +60,7 @@ make run            # lossy
 make run-fractal
 ```
 
-Output bundles are placed in `rust/target/bundled/`.
+Output bundles are placed in `target/bundled/`.
 
 ### Python GUI Apps
 
@@ -92,11 +90,9 @@ uv run python -m fractal.main
 uv sync
 
 # Build PyO3 bindings (requires Rust + maturin)
-cd rust
 uv run maturin develop -m crates/reverb-python/Cargo.toml --release
 uv run maturin develop -m crates/lossy-python/Cargo.toml --release
 uv run maturin develop -m crates/fractal-python/Cargo.toml --release
-cd ..
 
 # Launch
 uv run python -m reverb.main

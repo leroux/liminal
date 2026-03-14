@@ -322,7 +322,7 @@ If a macro has unavoidable discontinuities, document it and consider restricting
 The mapping layer lives in the Rust DSP crate alongside the processor — not in Python. The PCA analysis is a throwaway Python tool; the resulting params struct and mappings are Rust code.
 
 ```
-rust/crates/<plugin>-dsp/src/simplified.rs
+crates/<plugin>-dsp/src/simplified.rs
 
 SimplifiedParams::to_full_params(&self) -> FullParams      // forward
 SimplifiedParams::from_full_params(p: &FullParams) -> Self  // reverse (lossy)
@@ -500,7 +500,7 @@ In practice, the most common workflow is: **Sparse PCA** as the primary analysis
 9. Identify macro controls from top PCs
 
 **Implementation (Rust):**
-10. Implement `SimplifiedParams` in `rust/crates/<plugin>-dsp/src/simplified.rs`
+10. Implement `SimplifiedParams` in `crates/<plugin>-dsp/src/simplified.rs`
 11. Forward mapping: `to_full_params()` with safety constraints baked in
 12. Reverse mapping: `from_full_params()` (lossy best-fit)
 13. `#[serde(default)]` for sparse JSON, unit tests for roundtrip, extremes, constraints

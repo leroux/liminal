@@ -7,10 +7,10 @@ Conventions for building new audio effect plugins. Refer to lossy and fractal as
 Every plugin has three layers:
 
 1. **Python package** (`<name>/`) — params, GUI, presets, CLI renderer, entry point via `<name>/main.py`
-2. **Rust DSP crate** (`rust/crates/<name>-dsp/`) — pure algorithm, no plugin framework deps
-3. **Rust plugin crate** (`rust/crates/<name>-plugin/`) — nih-plug VST3/CLAP wrapper + egui GUI
+2. **Rust DSP crate** (`crates/<name>-dsp/`) — pure algorithm, no plugin framework deps
+3. **Rust plugin crate** (`crates/<name>-plugin/`) — nih-plug VST3/CLAP wrapper + egui GUI
 
-Plus a **PyO3 bindings crate** (`rust/crates/<name>-python/`) bridging Rust DSP to Python.
+Plus a **PyO3 bindings crate** (`crates/<name>-python/`) bridging Rust DSP to Python.
 
 All three plugins (reverb, lossy, fractal) follow this pattern.
 
@@ -29,7 +29,7 @@ All three plugins (reverb, lossy, fractal) follow this pattern.
 - **PyO3 crate** is a thin cdylib: numpy arrays in, numpy out, JSON params string. Module named `<name>_rust`. Built with maturin.
 - **Plugin crate** uses `crate-type = ["cdylib", "lib"]` + `[[bin]]` for standalone. Implements `to_dsp_params()` to convert nih-plug params to DSP struct.
 - **shared-dsp crate** provides `SmoothedParam`, `RingBuffer`, `RunningMetrics`, and OSC server/client.
-- **Vendored deps:** nih-plug and baseview at `rust/patches/`, redirected via `[patch]` in workspace `Cargo.toml`.
+- **Vendored deps:** nih-plug and baseview at `patches/`, redirected via `[patch]` in workspace `Cargo.toml`.
 
 ## Python GUI Patterns
 
@@ -51,13 +51,13 @@ All three plugins (reverb, lossy, fractal) follow this pattern.
 
 ```bash
 # PyO3 bindings (for Python GUI)
-cd rust/crates/<name>-python && maturin develop --release
+cd crates/<name>-python && maturin develop --release
 
 # Python GUI
 uv run python -m <name>.main
 
 # VST plugin build + install
-cd rust && make <name> && make install
+make <name> && make install
 
 # Standalone (no DAW)
 cargo run --bin <name>-standalone --release
@@ -74,4 +74,4 @@ cargo run --bin <name>-standalone --release
 7. LLM guide text — add to `shared/llm_guide_text.py`
 8. nih-plug plugin — block buffering, params, egui GUI, preset embedding
 9. Standalone binary — `[[bin]]` target in plugin Cargo.toml
-10. Registration — `pyproject.toml` (package + console script), `rust/Cargo.toml` (workspace members), `rust/Makefile` (build target)
+10. Registration — `pyproject.toml` (package + console script), `Cargo.toml` (workspace members), `Makefile` (build target)

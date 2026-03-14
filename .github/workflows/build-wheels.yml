@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "rust/crates/*-dsp/**"
-      - "rust/crates/*-python/**"
-      - "rust/Cargo.toml"
-      - "rust/Cargo.lock"
+      - "crates/*-dsp/**"
+      - "crates/*-python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/build-wheels.yml"
     tags:
       - "v*"
@@ -51,14 +51,14 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            rust/target
-          key: wheels-${{ matrix.name }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+            target
+          key: wheels-${{ matrix.name }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: wheels-${{ matrix.name }}-cargo-
 
       - name: Build reverb-rust wheel
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: rust/crates/reverb-python
+          working-directory: crates/reverb-python
           target: ${{ matrix.target }}
           args: --release --out ../../../dist
           manylinux: auto
@@ -66,7 +66,7 @@ jobs:
       - name: Build lossy-rust wheel
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: rust/crates/lossy-python
+          working-directory: crates/lossy-python
           target: ${{ matrix.target }}
           args: --release --out ../../../dist
           manylinux: auto
@@ -74,7 +74,7 @@ jobs:
       - name: Build fractal-rust wheel
         uses: PyO3/maturin-action@v1
         with:
-          working-directory: rust/crates/fractal-python
+          working-directory: crates/fractal-python
           target: ${{ matrix.target }}
           args: --release --out ../../../dist
           manylinux: auto

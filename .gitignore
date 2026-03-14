@@ -1,32 +1,16 @@
-# Python-generated files
+# Rust build artifacts
+target/
+
+# Python
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
 .venv
 
 # macOS
 .DS_Store
 
-# Temp spectrograms for LLM tuner
-.tmp_spectrograms/
-
-# Rust build artifacts
-rust/target/
-
 # Audio files
 *.wav
 
-# Explore heavy output dirs
-explore/output/
-explore/output_asymmetry/
-explore/inputs/
-explore/asymmetry_winners/
-explore/lofidrum_winners/
-explore/sparse_hits_winners/
-
+# Misc
 node_modules/
